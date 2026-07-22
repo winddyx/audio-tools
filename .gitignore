@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 模型缓存（自动下载）
+models/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

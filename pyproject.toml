@@ -1,0 +1,16 @@
+[project]
+name = "omnivoice-toolkit"
+version = "0.1.0"
+description = "OmniVoice 配音工具：文本转语音、批量生成"
+requires-python = ">=3.10"
+dependencies = [
+    "omnivoice",
+    "soundfile",
+    "torch",
+    "torchaudio",
+    "modelscope",
+    "funasr",
+]
+
+[dependency-groups]
+dev = []
