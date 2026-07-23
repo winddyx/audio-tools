@@ -17,9 +17,9 @@ import time
 import soundfile as sf
 
 from omni import (
-    OMNI_MODEL_ID, MODEL_PATH, MODELS_DIR,
+    OMNI_MODEL_ID, MODEL_PATH,
     NUM_STEP, GUIDANCE_SCALE, LANGUAGE, INSTRUCT,
-    setup_cache, resolve_path, convert_audio, load_model, make_gen_config,
+    resolve_path, convert_audio, load_model, make_gen_config,
     transcribe_audio,
 )
 
@@ -47,8 +47,6 @@ def main():
     parser.add_argument("--draw-count", "-n", type=int, default=None,
                         help="生成次数（默认 2，可通过 DRAW_COUNT 环境变量覆盖）")
     args = parser.parse_args()
-
-    setup_cache(MODELS_DIR)
 
     logger = logging.getLogger("omni-txt")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -81,7 +79,7 @@ def main():
 
         ref_text = REF_TEXT or transcribe_audio(tmp_ref)
 
-        resolved = resolve_path(OMNI_MODEL_ID, MODEL_PATH, MODELS_DIR)
+        resolved = resolve_path(OMNI_MODEL_ID, MODEL_PATH)
         model = load_model(resolved)
 
         gen_config = make_gen_config(NUM_STEP, GUIDANCE_SCALE)

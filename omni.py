@@ -21,9 +21,6 @@ MODEL_PATH = ""
 # 项目根目录（omni.py 所在目录）
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# 模型缓存目录（相对项目根）
-MODELS_DIR = "models"
-
 # 硬件加速（OmniVoice MPS 可能 SIGSEGV，默认 CPU）
 DEVICE = "mps"
 
@@ -46,37 +43,19 @@ def _check_exe(name: str):
 # ── 模型缓存与下载 ──────────────────────────────────────────
 
 
-def setup_cache(cache_dir: str = MODELS_DIR) -> str:
-    """配置模型缓存目录，返回绝对路径。"""
-    d = os.path.abspath(cache_dir) if not os.path.isabs(cache_dir) else cache_dir
-    os.makedirs(d, exist_ok=True)
-    os.environ.setdefault("MODELSCOPE_CACHE", d)
-    return d
-
-
-def ensure_downloaded(model_id: str, cache_dir: str) -> str:
-    """从 ModelScope 下载模型到缓存目录（已存在则跳过），返回模型路径。"""
-    if "/" not in model_id:
-        return model_id
-    from modelscope.hub.snapshot_download import snapshot_download
-    target = os.path.join(cache_dir, model_id.replace("/", "--"))
-    if not os.path.isdir(target):
-        snapshot_download(model_id, cache_dir=cache_dir)
-    return target
-
-
 def resolve_path(
     model_id: str = OMNI_MODEL_ID,
     local_path: str = "",
-    cache_dir: str = MODELS_DIR,
 ) -> str:
-    """通用模型路径解析：优先 local_path，否则从 ModelScope 下载到缓存。"""
+    """通用模型路径解析：优先 local_path，否则从 ModelScope 下载。
+
+    snapshot_download 不传 cache_dir，由 ModelScope 自行决定缓存位置
+    （默认 ~/.cache/modelscope/hub，或遵循 MODELSCOPE_CACHE 环境变量）。
+    """
     if local_path:
         return os.path.abspath(local_path)
-    d = setup_cache(cache_dir)
-    ensure_downloaded(model_id, d)
     from modelscope.hub.snapshot_download import snapshot_download
-    return snapshot_download(model_id, cache_dir=d)
+    return snapshot_download(model_id)
 
 # ── 模型加载 ────────────────────────────────────────────────
 

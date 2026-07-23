@@ -17,8 +17,8 @@ from datetime import datetime
 import soundfile as sf
 
 from omni import (
-    OMNI_MODEL_ID, MODELS_DIR, NUM_STEP, GUIDANCE_SCALE, LANGUAGE, INSTRUCT, DEVICE, _PROJECT_ROOT,
-    setup_cache, resolve_path, convert_audio, load_model, make_gen_config,
+    OMNI_MODEL_ID, NUM_STEP, GUIDANCE_SCALE, LANGUAGE, INSTRUCT, DEVICE, _PROJECT_ROOT,
+    resolve_path, convert_audio, load_model, make_gen_config,
     transcribe_audio,
 )
 
@@ -42,8 +42,6 @@ FILENAME_FORMAT = "{line:03d}_{gen:02d}_{timestamp}.wav"
 
 
 def main():
-    setup_cache(MODELS_DIR)
-
     logger = logging.getLogger("omni-batch")
     logging.basicConfig(
         level=logging.INFO,
@@ -86,7 +84,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     logger.info("输出: %s  |  文本 %d 行 × %d 次 = %d 个文件", output_dir, len(lines), NUM_GEN, total)
 
-    resolved = resolve_path(OMNI_MODEL_ID, MODEL_PATH, MODELS_DIR)
+    resolved = resolve_path(OMNI_MODEL_ID, MODEL_PATH)
     model = load_model(resolved)
 
     prompt = model.create_voice_clone_prompt(
