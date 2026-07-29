@@ -21,6 +21,19 @@ from typing import Optional
 import soundfile as sf
 
 
+# ── 设备检测 ──────────────────────────────────────────────
+
+
+def get_best_device() -> str:
+    """自动检测最佳可用设备：CUDA > MPS > CPU。"""
+    import torch
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 # ── 配置 ──────────────────────────────────────────────────
 
 @dataclass
@@ -30,7 +43,7 @@ class Config:
     # ── 模型 ──
     model_id: str = "k2-fsa/OmniVoice"
     model_path: str = ""      # 非空时优先于 model_id
-    device: str = "mps"       
+    device: str = ""          # 留空则自动检测（CUDA > MPS > CPU）       
 
     # ── 生成参数 ──
     num_step: int = 64
@@ -209,7 +222,7 @@ def _resolve_config(args: argparse.Namespace,
                     defaults: Optional[Config] = None) -> Config:
     """合并 CLI 参数 → 环境变量 → 默认值，返回有效的运行配置。"""
     d = defaults or Config()
-    return Config(
+    cfg = Config(
         ref_audio=args.ref_audio or os.environ.get("REF_AUDIO") or d.ref_audio,
         text_path=args.text_file or os.environ.get("TEXT_PATH") or d.text_path,
         language=args.language or os.environ.get("LANGUAGE") or d.language,
@@ -224,6 +237,9 @@ def _resolve_config(args: argparse.Namespace,
         num_step=int(os.environ.get("NUM_STEP", d.num_step)),
         guidance_scale=float(os.environ.get("GUIDANCE_SCALE", d.guidance_scale)),
     )
+    if not cfg.device:
+        cfg.device = get_best_device()
+    return cfg
 
 
 def _validate_inputs(ref_audio: str, text_path: str,
@@ -252,7 +268,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     try:
         args = _parse_args(argv)
         cfg = _resolve_config(args)
-        logger.info("🌐 语言: %s", cfg.language)
+        logger.info("🌐 语言: %s  设备: %s", cfg.language, cfg.device)
 
         _validate_inputs(cfg.ref_audio, cfg.text_path, logger)
 

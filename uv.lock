@@ -1674,6 +1674,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "funasr" },
+    { name = "gradio" },
     { name = "modelscope" },
     { name = "omnivoice" },
     { name = "soundfile" },
@@ -1684,6 +1685,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "funasr" },
+    { name = "gradio" },
     { name = "modelscope" },
     { name = "omnivoice" },
     { name = "soundfile" },

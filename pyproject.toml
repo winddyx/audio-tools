@@ -5,6 +5,7 @@ description = "OmniVoice 配音工具：文本转语音、批量生成"
 requires-python = ">=3.10"
 dependencies = [
     "omnivoice",
+    "gradio",
     "soundfile",
     "torch",
     "torchaudio",
