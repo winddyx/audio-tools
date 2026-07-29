@@ -54,7 +54,7 @@ class Config:
     # ── 长文本配音 ──
     ref_audio: str = ""
     text_path: str = ""
-    draw_count: int = 2
+    draw_count: int = 1       # 抽卡次数
     ref_text: str = ""        # 留空则自动转录
     output_dir: str = ""      # 留空则输出到文本文件所在目录
 
@@ -301,7 +301,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             out_base = os.path.join(out_dir, os.path.basename(cfg.text_path))
 
             for draw in range(1, cfg.draw_count + 1):
-                out_path = f"{out_base}.{draw:02d}.wav"
+                ts = int(time.time())
+                out_path = f"{out_base}.{ts}.wav"
                 logger.info("  [%d/%d] 生成中 …", draw, cfg.draw_count)
                 t1 = time.time()
                 audio = model.generate(
