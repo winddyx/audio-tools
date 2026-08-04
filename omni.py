@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
 import soundfile as sf
 
 
@@ -54,9 +55,13 @@ class Config:
     # ── 长文本配音 ──
     ref_audio: str = ""
     text_path: str = ""
-    draw_count: int = 1       # 抽卡次数
+    draw_count: int = 2       # 抽卡次数
     ref_text: str = ""        # 留空则自动转录
     output_dir: str = ""      # 留空则输出到文本文件所在目录
+
+    # ── 强制断句 ──
+    sentence_breaks: bool = False   # 按句末标点/换行切段逐段生成，段间插入停顿
+    break_pause: float = 0.4       # 段间停顿时长（秒）
 
 
 # LANGUAGE 可选值（ISO 639-3 代码或完整名称，不区分大小写）：
@@ -193,6 +198,105 @@ def make_gen_config(num_step: int = 0,
     return OmniVoiceGenerationConfig(num_step=num_step, guidance_scale=guidance_scale)
 
 
+# ── 强制断句 ──────────────────────────────────────────────
+#
+# OmniVoice 对长文本会内部按标点切块，但短句（如「招待。」）常被合并进
+# 同一块，块内停顿由模型自行生成，容易出现句号处连读（详见检查结论）。
+# 这里在本项目侧按句末标点/换行切段，逐段调用 generate，段间插入确定
+# 停顿，句号处的断句因此完全可控。
+
+# 句末标点（切段边界）；逗号/顿号/分号不切，交给模型处理
+_SENT_END = "。！？…!?"
+# 句末标点后紧跟的闭合引号/括号，归属前一段
+_CLOSE_MARKS = set("\"'“”‘’）】]》」』)")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """按句末标点/换行切成句子，保留标点，引号归前句。"""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    parts = re.split(r"(?<=[。！？…!?])", text)
+    sentences: list[str] = []
+    for part in parts:
+        # 以闭合引号/括号开头的碎片并入前一句（如 「招待。”搞定」）
+        while part and part[0] in _CLOSE_MARKS and sentences:
+            sentences[-1] += part[0]
+            part = part[1:].lstrip()
+        # 换行作为段落边界切分
+        for sub in part.split("\n"):
+            sub = sub.strip()
+            if sub:
+                sentences.append(sub)
+    return sentences
+
+
+def _group_sentences(sentences: list[str],
+                     group_size: int = 3,
+                     merge_max: int = 100) -> list[str]:
+    """放宽分组：句末标点结尾的句子每 group_size 句合为一组，段间仍强制停顿。
+
+    分组放宽后，组内句号停顿交由模型自行规划（保留跨句韵律），组间停顿
+    由本项目保证。无句末标点的句子（换行分隔的残句/列表行）强制作为组
+    边界，避免无标点内容被吞并。group_size=1 时退化为每句一组。
+    """
+    groups: list[str] = []
+    cur: list[str] = []
+    for s in sentences:
+        if s[-1] not in _SENT_END:
+            # 无句末标点 → 组边界
+            if cur:
+                groups.append("".join(cur))
+                cur = []
+            cur.append(s)
+            continue
+        if (len(cur) >= group_size
+                or sum(len(x) for x in cur) + len(s) > merge_max):
+            groups.append("".join(cur))
+            cur = []
+        cur.append(s)
+    if cur:
+        groups.append("".join(cur))
+    return groups
+
+
+def _concatenate_with_pause(audios: list[np.ndarray],
+                            sampling_rate: int,
+                            pause_s: float) -> np.ndarray:
+    """按顺序拼接各段音频，段间插入 pause_s 秒静音。"""
+    pause = np.zeros(int(pause_s * sampling_rate), dtype=np.float32)
+    out = audios[0]
+    for a in audios[1:]:
+        out = np.concatenate([out, pause, a])
+    return out
+
+
+def generate_with_breaks(model,
+                         text: str,
+                         pause_s: float = 0.4,
+                         group_size: int = 3,
+                         merge_max: int = 100,
+                         logger: Optional[logging.Logger] = None,
+                         **kwargs) -> np.ndarray:
+    """按句末标点切段，每 group_size 句合为一组逐段生成，组间插入确定停顿。
+
+    只切出多组时才分段生成；单组文本直接一次生成（行为与原逻辑一致）。
+    多组模式下忽略 duration（固定时长对多组无意义），speed 等参数保留。
+    """
+    sentences = _split_sentences(text)
+    if len(sentences) <= 1:
+        return model.generate(text=text, **kwargs)[0]
+
+    groups = _group_sentences(sentences, group_size, merge_max)
+    if len(groups) <= 1:
+        return model.generate(text=text, **kwargs)[0]
+
+    if logger is not None:
+        logger.info("    强制断句: %d 段, 段间停顿 %.1fs", len(groups), pause_s)
+    kwargs = dict(kwargs)
+    kwargs.pop("duration", None)
+    audios = [model.generate(text=g, **kwargs)[0] for g in groups]
+    return _concatenate_with_pause(audios, model.sampling_rate, pause_s)
+
+
 # ── CLI 入口 ──────────────────────────────────────────────
 
 
@@ -218,6 +322,14 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """解析布尔环境变量：0/false/no/off/空 视为 False。"""
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ("", "0", "false", "no", "off")
+
+
 def _resolve_config(args: argparse.Namespace,
                     defaults: Optional[Config] = None) -> Config:
     """合并 CLI 参数 → 环境变量 → 默认值，返回有效的运行配置。"""
@@ -236,6 +348,8 @@ def _resolve_config(args: argparse.Namespace,
         model_id=os.environ.get("OMNI_MODEL_ID") or d.model_id,
         num_step=int(os.environ.get("NUM_STEP", d.num_step)),
         guidance_scale=float(os.environ.get("GUIDANCE_SCALE", d.guidance_scale)),
+        sentence_breaks=_env_flag("SENTENCE_BREAKS", d.sentence_breaks),
+        break_pause=float(os.environ.get("BREAK_PAUSE", d.break_pause)),
     )
     if not cfg.device:
         cfg.device = get_best_device()
@@ -305,11 +419,20 @@ def main(argv: Optional[list[str]] = None) -> None:
                 out_path = f"{out_base}.{ts}.wav"
                 logger.info("  [%d/%d] 生成中 …", draw, cfg.draw_count)
                 t1 = time.time()
-                audio = model.generate(
-                    text=text, language=cfg.language, ref_audio=tmp_ref,
-                    ref_text=ref_text, instruct=cfg.instruct or None,
-                    duration=None, generation_config=gen_config,
-                )[0]
+                if cfg.sentence_breaks:
+                    audio = generate_with_breaks(
+                        model, text, pause_s=cfg.break_pause,
+                        logger=logger,
+                        language=cfg.language, ref_audio=tmp_ref,
+                        ref_text=ref_text, instruct=cfg.instruct or None,
+                        generation_config=gen_config,
+                    )
+                else:
+                    audio = model.generate(
+                        text=text, language=cfg.language, ref_audio=tmp_ref,
+                        ref_text=ref_text, instruct=cfg.instruct or None,
+                        duration=None, generation_config=gen_config,
+                    )[0]
                 sf.write(out_path, audio, model.sampling_rate)
                 kb = os.path.getsize(out_path) / 1024
                 logger.info("  %s  (%.0f KB, %.1f s)",

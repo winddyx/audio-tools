@@ -31,7 +31,7 @@ from omnivoice import OmniVoice, OmniVoiceGenerationConfig
 from omnivoice.utils.lang_map import LANG_NAMES, lang_display_name
 
 # 核心配置与工具函数引用 omni.py（唯一数据源）
-from omni import Config, resolve_path, convert_audio
+from omni import Config, resolve_path, convert_audio, generate_with_breaks
 
 # ── 日志 ──────────────────────────────────────────────────
 
@@ -238,12 +238,15 @@ def build_demo(model: OmniVoice) -> gr.Blocks:
             kw["instruct"] = instruct.strip()
 
         try:
-            audio = model.generate(**kw)
+            # 按句末标点切段逐段生成，段间插入确定停顿（单句时与直接生成等价）
+            audio = generate_with_breaks(
+                model, kw.pop("text"), logger=logger, **kw
+            )
         except Exception as e:
             logger.exception("生成失败")
             return None, f"错误: {type(e).__name__}: {e}"
 
-        waveform = (audio[0] * 32767).astype(np.int16)
+        waveform = (audio * 32767).astype(np.int16)
 
         if mode == "clone":
             ref_name = os.path.basename(ref_audio)
