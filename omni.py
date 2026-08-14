@@ -294,7 +294,7 @@ _ASR_MAX_NEW_TOKENS = 512
 
 def _asr_model_id(cfg: Config) -> str:
     """ASR 模型 ID：默认 Qwen3-ASR-1.7B-hf（transformers 原生版），可用 ASR_MODEL 覆盖。"""
-    return cfg.asr_model or "Qwen/Qwen3-ASR-1.7B-hf"
+    return cfg.asr_model or "Qwen/Qwen3-ASR-0.6B-hf"
 
 
 def _asr_language(cfg: Config) -> str:
