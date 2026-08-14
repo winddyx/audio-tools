@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-OmniVoice Web Demo — Gradio 交互界面
+OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 
-提供语音克隆与音色设计两大功能模块。
-核心参数引用 omni.py 的 Config，集中设置。
+模型加载 / 路径解析 / ASR 转写 / 生成参数 全部复用 omni.py 的模块
+（omni.py 是唯一实现，本文件只做 UI 封装，不重写模型逻辑）：
+- 模型加载: omni._load_model()（内部经 resolve_path 解析路径，本地优先、
+  命中缓存则跳过联网，带全局缓存，复用 CLI 同款加载路径）
+- 参考文本转写: omni._transcribe_ref()（Qwen3-ASR，懒加载）
+- 生成参数: 参数名与 omni._GEN_PARAM_ENVS 完全一致
 
 用法:
     uv run python web.py
-    uv run python web.py --model-path /path/to/OmniVoice --port 8000 --share
+    uv run python web.py --port 38001 --share
 """
 
 from __future__ import annotations
@@ -18,43 +22,72 @@ import logging
 import os
 import shutil
 import sys
-import tempfile
 import time
 from typing import Any, Dict, Optional
 
 import gradio as gr
 import numpy as np
 import soundfile as sf
-import torch
 
-from omnivoice import OmniVoice, OmniVoiceGenerationConfig
-from omnivoice.utils.lang_map import LANG_NAMES, lang_display_name
+from omnivoice.utils.lang_map import LANG_NAME_TO_ID, lang_display_name
 
-# 核心配置与工具函数引用 omni.py（唯一数据源）
-from omni import Config, resolve_path, convert_audio, generate_with_breaks
-
-# ── 日志 ──────────────────────────────────────────────────
+# 模型逻辑全部复用 omni.py（唯一实现）
+from omni import (
+    Config,
+    get_best_device,
+    _load_model,
+    _transcribe_ref,
+    _GEN_PARAM_ENVS,
+)
 
 logger = logging.getLogger("omnivoice-web")
 
+# ── 主题与样式（gradio 6: launch() 时传入）────────────────
+_THEME = gr.themes.Soft(font=["Inter", "Arial", "sans-serif"])
+_CSS = """
+.gradio-container {max-width: 100% !important; font-size: 16px !important;}
+.gradio-container h1 {font-size: 1.5em !important;}
+.gradio-container .prose {font-size: 1.1em !important;}
+.compact-audio audio {height: 60px !important;}
+.compact-audio .waveform {min-height: 80px !important;}
+"""
 
-# ── 设备检测 ──────────────────────────────────────────────
+# 推理设备（启动时确定，全局共用）
+_DEVICE: str = ""
 
-def get_best_device() -> str:
-    """自动检测最佳可用设备：CUDA > MPS > CPU。"""
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+# 克隆页抽卡结果槽位数（也是抽卡次数上限，默认 2）
+_MAX_DRAWS = 8
 
-
-# ── 语言列表 ──────────────────────────────────────────────
-
-_ALL_LANGUAGES = ["Auto"] + sorted(lang_display_name(n) for n in LANG_NAMES)
+# 生成临时目录：项目根目录下 .tmp（非系统 /tmp），正常退出时 atexit 清理
+_TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tmp")
+atexit.register(shutil.rmtree, _TMP_DIR, ignore_errors=True)
 
 
-# ── 音色设计属性 ──────────────────────────────────────────
+def _cleanup_leftover_tmp() -> None:
+    """每次启动清理项目 .tmp 目录（上次异常退出残留的生成文件）。
+
+    程序正常退出由 atexit 清理 .tmp；异常退出（如 SIGKILL）残留的
+    生成文件在此处统一清扫。
+    """
+    if os.path.isdir(_TMP_DIR):
+        shutil.rmtree(_TMP_DIR, ignore_errors=True)
+        logger.info("已清理项目临时目录: %s", _TMP_DIR)
+
+# ── 语言列表（显示名 → 代码）──────────────────────────────
+# LANG_NAME_TO_ID: 小写语言名 → ISO 639-3 代码（OmniVoice 支持 600+ 语言）
+_ALL_LANGUAGES = ["Auto"] + sorted(
+    lang_display_name(n) for n in LANG_NAME_TO_ID
+)
+
+
+def _lang_code(display: str) -> str:
+    """UI 显示名 → OmniVoice 语言代码（'English' → 'en'）；Auto/空 → ""。"""
+    if not display or display == "Auto":
+        return ""
+    return LANG_NAME_TO_ID.get(display.strip().lower(), "")
+
+
+# ── 音色设计属性参考（纯 UI 内容）────────────────────────
 
 _CATEGORIES = {
     "Gender / 性别": ["Male / 男", "Female / 女"],
@@ -91,35 +124,334 @@ _ATTR_INFO = {
 }
 
 
-# ── 模型加载（带全局缓存）──────────────────────────────────
+# ── 生成参数（复用 omni.py 的参数名，与 CLI 环境变量完全一致）──
+# 从 omni._GEN_PARAM_ENVS 派生：env 名 → (generate 参数名, cast)
+_WEB_PARAMS = {
+    "num_step": ("推理步数 Inference Steps",
+                 dict(minimum=4, maximum=64, step=1, value=32),
+                 "越高越慢、质量越好。"),
+    "guidance_scale": ("引导强度 Guidance Scale (CFG)",
+                       dict(minimum=0.0, maximum=4.0, step=0.1, value=2.0),
+                       "默认 2.0。"),
+    "t_shift": ("时间偏移 T Shift",
+                dict(minimum=0.0, maximum=1.0, step=0.05, value=0.1), ""),
+    "denoise": ("降噪 Denoise", None, "启用后对输出进行降噪处理。"),
+    "postprocess_output": ("后处理输出 Postprocess Output", None,
+                           "去除生成音频中的长静音。"),
+    "normalize_text": ("归一化文本 Normalize Text", None,
+                       "文本数字/符号转读法（需 num2words）。"),
+    "speed": ("语速 Speed",
+              dict(minimum=0.5, maximum=1.5, step=0.05, value=1.0),
+              "1.0=正常。>1 加快，<1 减慢。设置时长后此项无效。"),
+    "duration": ("时长 Duration (秒)", None,
+                 "留空使用语速控制，设置固定时长将覆盖语速。"),
+}
 
-_OMNIVOICE_MODEL: Optional[OmniVoice] = None
+
+def _gen_kwargs_from_ui(ui: Dict[str, Any]) -> Dict[str, Any]:
+    """把 UI 参数打包成与 omni.py 环境变量同名同值的生成参数。
+
+    只透传用户显式设置/调整过的项，其余交给模型默认值——
+    与 omni.py 的 _gen_kwargs() 语义一致（参数名取自 _GEN_PARAM_ENVS）。
+    """
+    kw: Dict[str, Any] = {}
+    for env, (param, cast) in _GEN_PARAM_ENVS.items():
+        v = ui.get(param)
+        if v is not None:
+            kw[param] = cast(v) if isinstance(v, str) else v
+    return kw
 
 
-def load_model(
-    resolved_path: str,
-    device: str = "",
-    load_asr: bool = False,
-    asr_model_name: str = "",
-) -> OmniVoice:
-    """加载 OmniVoice 模型（带全局缓存）。全部使用 float32。"""
-    global _OMNIVOICE_MODEL
-    if _OMNIVOICE_MODEL is not None:
-        return _OMNIVOICE_MODEL
+# ── 构建 Gradio 界面 ─────────────────────────────────────
 
-    device = device or get_best_device()
-    logger.info("⏳ 加载模型 %s (device=%s, float32) …", resolved_path, device)
-    t0 = time.time()
-    _OMNIVOICE_MODEL = OmniVoice.from_pretrained(
-        resolved_path,
-        device_map=device,
-        dtype=torch.float32,
-        load_asr=load_asr,
-        asr_model_name=asr_model_name or None,
-        local_files_only=os.path.isdir(resolved_path),
-    )
-    logger.info("✓ 模型加载: %.1fs", time.time() - t0)
-    return _OMNIVOICE_MODEL
+def build_demo() -> gr.Blocks:
+    # 生成临时目录：项目根目录下 .tmp（退出时 atexit 清理，启动时清扫残留）
+    os.makedirs(_TMP_DIR, exist_ok=True)
+
+    # ── 共用生成核心（模型调用全部走 omni.py）──────────────
+
+    def _gen_core(
+        text: str,
+        language: str,
+        ref_audio: Optional[str],
+        ref_text: Optional[str],
+        instruct: Optional[str],
+        ui: Dict[str, Any],
+        mode: str,  # "clone" | "design"
+    ):
+        if not text or not text.strip():
+            return None, "请输入待合成文本。"
+
+        # 复用 omni.py：Config + 模型加载（全局缓存，本地优先）
+        cfg = Config(device=_DEVICE)
+        model = _load_model(cfg, logger)
+
+        lang = _lang_code(language) or None
+        kw = _gen_kwargs_from_ui(ui)
+
+        try:
+            if mode == "clone":
+                if not ref_audio:
+                    return None, "请上传参考音频。"
+                if not ref_text:
+                    # 复用 omni.py 的 Qwen3-ASR 转写（懒加载；语言代码随 cfg 传入，
+                    # 由 omni._asr_language 映射为 Qwen3-ASR 语言全名强制转写）
+                    asr_cfg = Config(device=_DEVICE, ref_audio=ref_audio,
+                                     language=lang or "")
+                    ref_text = _transcribe_ref(asr_cfg, logger)
+                audios = model.generate(
+                    text=text.strip(),
+                    language=lang,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    instruct=instruct or None,
+                    **kw,
+                )
+            else:
+                audios = model.generate(
+                    text=text.strip(),
+                    language=lang,
+                    instruct=instruct or None,
+                    **kw,
+                )
+        except Exception as e:
+            logger.exception("生成失败")
+            return None, f"错误: {type(e).__name__}: {e}"
+
+        waveform = (audios[0] * 32767).astype(np.int16)
+        # 文件名 = 生成完成时的 unix 时间戳（秒）；同秒内冲突则递增秒数
+        ts = int(time.time())
+        out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
+        while os.path.exists(out_path):
+            ts += 1
+            out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
+        sf.write(out_path, waveform, model.sampling_rate)
+        return out_path, "生成完成 ✓"
+
+    # ── 主题与样式（gradio 6: 传参到 launch()，不传 Blocks 构造器）────
+
+    # 关闭 gradio 分析上报（避免无谓的联网）
+    with gr.Blocks(title="OmniVoice Web Demo", analytics_enabled=False) as demo:
+        gr.Markdown(
+            "# 🎤 OmniVoice Web Demo\n"
+            "基于 OmniVoice 的语音合成演示 — 支持语音克隆与音色设计。"
+        )
+
+        # ── 可复用的语言下拉框 ────────────────────────────
+
+        def _lang_dropdown(label="语言 (可选)", value="Auto"):
+            return gr.Dropdown(
+                label=label,
+                choices=_ALL_LANGUAGES,
+                value=value,
+                allow_custom_value=False,
+                interactive=True,
+                info="选择 Auto 以自动检测语种。",
+            )
+
+        # ── 可复用的生成参数折叠面板 ──────────────────────
+
+        def _gen_settings(include_ref_text: bool = False,
+                          include_instruct: bool = False):
+            with gr.Accordion("生成参数 (可选)", open=False):
+                rt = it = None
+                if include_ref_text:
+                    rt = gr.Textbox(
+                        label="参考文本 (可选) Reference Text",
+                        lines=2,
+                        placeholder="留空则用 Qwen3-ASR 自动转写参考音频",
+                    )
+                if include_instruct:
+                    it = gr.Textbox(
+                        label="附加指令 (可选) Instruct",
+                        lines=2,
+                        placeholder="例如：female, low pitch（支持中英混合，仅限下表列出的词条）",
+                    )
+                ns = gr.Slider(
+                    label=_WEB_PARAMS["num_step"][0],
+                    info=_WEB_PARAMS["num_step"][2],
+                    **_WEB_PARAMS["num_step"][1],
+                )
+                gs = gr.Slider(
+                    label=_WEB_PARAMS["guidance_scale"][0],
+                    info=_WEB_PARAMS["guidance_scale"][2],
+                    **_WEB_PARAMS["guidance_scale"][1],
+                )
+                ts = gr.Slider(
+                    label=_WEB_PARAMS["t_shift"][0],
+                    info=_WEB_PARAMS["t_shift"][2],
+                    **_WEB_PARAMS["t_shift"][1],
+                )
+                dn = gr.Checkbox(
+                    label=_WEB_PARAMS["denoise"][0],
+                    info=_WEB_PARAMS["denoise"][2], value=True,
+                )
+                po = gr.Checkbox(
+                    label=_WEB_PARAMS["postprocess_output"][0],
+                    info=_WEB_PARAMS["postprocess_output"][2], value=True,
+                )
+                nm = gr.Checkbox(
+                    label=_WEB_PARAMS["normalize_text"][0],
+                    info=_WEB_PARAMS["normalize_text"][2], value=False,
+                )
+                sp = gr.Slider(
+                    label=_WEB_PARAMS["speed"][0],
+                    info=_WEB_PARAMS["speed"][2],
+                    **_WEB_PARAMS["speed"][1],
+                )
+                du = gr.Number(
+                    label=_WEB_PARAMS["duration"][0],
+                    info=_WEB_PARAMS["duration"][2], value=None,
+                )
+            if include_ref_text and include_instruct:
+                return ns, gs, ts, dn, po, nm, sp, du, rt, it
+            if include_instruct:
+                return ns, gs, ts, dn, po, nm, sp, du, it
+            return ns, gs, ts, dn, po, nm, sp, du
+
+        # ═════════════════════════════════════════════════
+        # 界面布局
+        # ═════════════════════════════════════════════════
+
+        with gr.Tabs():
+            # ── Tab 1: 语音克隆 ────────────────────────────
+            with gr.TabItem("语音克隆 Voice Clone"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        clone_text = gr.Textbox(
+                            label="待合成文本 Text to Synthesize",
+                            lines=4,
+                            placeholder="输入需要合成的文本…",
+                        )
+                        clone_lang = _lang_dropdown("语言 (可选)", "Auto")
+                        clone_ref_audio = gr.Audio(
+                            label="参考音频 Reference Audio",
+                            type="filepath",
+                        )
+                        clone_draw_count = gr.Number(
+                            label="抽卡次数 Draw Count",
+                            value=2, precision=0, minimum=1, maximum=_MAX_DRAWS,
+                            info=f"生成几个结果供挑选（默认为 2，最多 {_MAX_DRAWS}）。",
+                        )
+                        clone_btn = gr.Button("生成 Generate", variant="primary")
+                    with gr.Column(scale=1):
+                        clone_status = gr.Textbox(label="状态 Status", lines=2)
+                        clone_outputs = [
+                            gr.Audio(
+                                label=f"结果 {i + 1} Result {i + 1}",
+                                type="filepath",
+                                visible=False,
+                            )
+                            for i in range(_MAX_DRAWS)
+                        ]
+                        (
+                            clone_ns, clone_gs, clone_ts, clone_dn,
+                            clone_po, clone_nm, clone_sp, clone_du,
+                            clone_ref_text, clone_instruct,
+                        ) = _gen_settings(include_ref_text=True,
+                                          include_instruct=True)
+
+                    def _clone_fn(
+                        text, lang, ref_aud, ref_txt, instruct, draw_count,
+                        ns, gs, ts, dn, po, nm, sp, du,
+                    ):
+                        draw_count = max(1, min(int(draw_count or 2), _MAX_DRAWS))
+                        results: list[str] = []
+                        for i in range(draw_count):
+                            out, msg = _gen_core(
+                                text=text, language=lang,
+                                ref_audio=ref_aud, ref_text=ref_txt or None,
+                                instruct=instruct,
+                                ui=dict(
+                                    num_step=ns, guidance_scale=gs, t_shift=ts,
+                                    denoise=dn, postprocess_output=po,
+                                    normalize_text=nm, speed=sp, duration=du,
+                                ),
+                                mode="clone",
+                            )
+                            if out is None:
+                                # 出错：不破坏已有结果，只更新状态
+                                return (*([gr.update()] * _MAX_DRAWS), msg)
+                            results.append(out)
+                        # 前 draw_count 个槽位显示本次结果，其余隐藏
+                        slots = [
+                            gr.update(visible=True, value=results[i])
+                            if i < draw_count
+                            else gr.update(visible=False)
+                            for i in range(_MAX_DRAWS)
+                        ]
+                        return (*slots, f"生成完成 ✓ 共 {draw_count} 个结果")
+
+                    clone_btn.click(
+                        _clone_fn,
+                        inputs=[
+                            clone_text, clone_lang, clone_ref_audio,
+                            clone_ref_text, clone_instruct, clone_draw_count,
+                            clone_ns, clone_gs, clone_ts, clone_dn,
+                            clone_po, clone_nm, clone_sp, clone_du,
+                        ],
+                        outputs=[*clone_outputs, clone_status],
+                    )
+
+            # ── Tab 2: 音色设计 ────────────────────────────
+            with gr.TabItem("音色设计 Voice Design"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        ds_text = gr.Textbox(
+                            label="待合成文本 Text to Synthesize",
+                            lines=4,
+                            placeholder="输入需要合成的文本…",
+                        )
+                        ds_lang = _lang_dropdown("语言 (可选)", "Auto")
+                        ds_btn = gr.Button("生成 Generate", variant="primary")
+                        gr.Markdown(
+                            "**音色属性参考** — 可在指令中组合使用：\n\n"
+                            + "\n".join(
+                                f"- **{cat}**: {', '.join(opts)}"
+                                + (f"  \n  _{_ATTR_INFO.get(cat, '')}_"
+                                   if cat in _ATTR_INFO else "")
+                                for cat, opts in _CATEGORIES.items()
+                            )
+                        )
+                    with gr.Column(scale=1):
+                        ds_output = gr.Audio(
+                            label="合成结果 Output Audio",
+                            type="filepath",
+                        )
+                        ds_status = gr.Textbox(label="状态 Status", lines=2)
+                        (
+                            ds_ns, ds_gs, ds_ts, ds_dn,
+                            ds_po, ds_nm, ds_sp, ds_du,
+                            ds_instruct,
+                        ) = _gen_settings(include_instruct=True)
+
+                        def _design_fn(
+                            text, lang, instruct,
+                            ns, gs, ts, dn, po, nm, sp, du,
+                        ):
+                            return _gen_core(
+                                text=text, language=lang,
+                                ref_audio=None, ref_text=None,
+                                instruct=instruct,
+                                ui=dict(
+                                    num_step=ns, guidance_scale=gs, t_shift=ts,
+                                    denoise=dn, postprocess_output=po,
+                                    normalize_text=nm, speed=sp, duration=du,
+                                ),
+                                mode="design",
+                            )
+
+                        ds_btn.click(
+                            _design_fn,
+                            inputs=[
+                                ds_text, ds_lang, ds_instruct,
+                                ds_ns, ds_gs, ds_ts, ds_dn,
+                                ds_po, ds_nm, ds_sp, ds_du,
+                            ],
+                            outputs=[ds_output, ds_status],
+                        )
+
+    return demo
 
 
 # ── 构建参数解析器 ────────────────────────────────────────
@@ -142,7 +474,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--device", default=None,
-        help=f"推理设备（默认自动检测，Config: {Config.device}）",
+        help=f"推理设备（默认自动检测: CUDA > MPS > CPU）",
+    )
+    parser.add_argument(
+        "--asr-model",
+        default=os.environ.get("ASR_MODEL", Config.asr_model),
+        help=f"Qwen3-ASR 模型 ID/本地目录（默认: Qwen/Qwen3-ASR-1.7B-hf）",
     )
     parser.add_argument(
         "--ip", default="0.0.0.0", help="监听地址（默认 0.0.0.0）",
@@ -160,340 +497,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="创建公开链接",
     )
     parser.add_argument(
-        "--no-asr", action="store_true", default=False,
-        help="跳过加载 Whisper ASR 模型，参考文本自动转录不可用",
-    )
-    parser.add_argument(
-        "--asr-model",
-        default=os.environ.get("ASR_MODEL", "openai/whisper-large-v3-turbo"),
-        help="ASR 模型路径或 HuggingFace repo id",
+        "--no-browser", action="store_true", default=False,
+        help="不自动打开浏览器（默认启动后自动用默认浏览器打开 localhost:port）",
     )
     return parser
-
-
-# ── 构建 Gradio 界面 ─────────────────────────────────────
-
-def build_demo(model: OmniVoice) -> gr.Blocks:
-    sampling_rate = model.sampling_rate
-    # 临时目录，进程退出时自动清理
-    _tmp_dir = tempfile.mkdtemp(prefix="omnivoice_")
-    atexit.register(shutil.rmtree, _tmp_dir, ignore_errors=True)
-
-    # ── 共用生成核心 ──────────────────────────────────────
-
-    def _gen_core(
-        text: str,
-        language: str,
-        ref_audio: Optional[str],
-        instruct: Optional[str],
-        num_step: int,
-        guidance_scale: float,
-        denoise: bool,
-        speed: float,
-        duration: Optional[float],
-        preprocess_prompt: bool,
-        postprocess_output: bool,
-        mode: str,  # "clone" | "design"
-        ref_text: Optional[str] = None,
-    ):
-        if not text or not text.strip():
-            return None, "请输入待合成文本。"
-
-        gen_config = OmniVoiceGenerationConfig(
-            num_step=int(num_step or Config.num_step),
-            guidance_scale=float(guidance_scale) if guidance_scale is not None else Config.guidance_scale,
-            denoise=bool(denoise) if denoise is not None else True,
-            preprocess_prompt=bool(preprocess_prompt),
-            postprocess_output=bool(postprocess_output),
-        )
-
-        lang = language if (language and language != "Auto") else None
-
-        kw: Dict[str, Any] = dict(
-            text=text.strip(), language=lang, generation_config=gen_config,
-        )
-
-        if speed is not None and float(speed) != 1.0:
-            kw["speed"] = float(speed)
-        if duration is not None and float(duration) > 0:
-            kw["duration"] = float(duration)
-
-        if mode == "clone":
-            if not ref_audio:
-                return None, "请上传参考音频。"
-            # 音频格式转换（convert_audio 引用自 omni.py）
-            _tmp_fd, tmp_wav = tempfile.mkstemp(suffix="_omni_ref.wav")
-            os.close(_tmp_fd)
-            try:
-                convert_audio(ref_audio, tmp_wav)
-                kw["voice_clone_prompt"] = model.create_voice_clone_prompt(
-                    ref_audio=tmp_wav,
-                    ref_text=ref_text,
-                )
-            finally:
-                if os.path.exists(tmp_wav):
-                    os.unlink(tmp_wav)
-
-        if instruct and instruct.strip():
-            kw["instruct"] = instruct.strip()
-
-        try:
-            # 按句末标点切段逐段生成，段间插入确定停顿（单句时与直接生成等价）
-            audio = generate_with_breaks(
-                model, kw.pop("text"), logger=logger, **kw
-            )
-        except Exception as e:
-            logger.exception("生成失败")
-            return None, f"错误: {type(e).__name__}: {e}"
-
-        waveform = (audio * 32767).astype(np.int16)
-
-        if mode == "clone":
-            ref_name = os.path.basename(ref_audio)
-            utc_ts = int(time.time())
-            out_name = f"{ref_name}.{utc_ts}.wav"
-            out_path = os.path.join(_tmp_dir, out_name)
-            sf.write(out_path, waveform, sampling_rate)
-            return out_path, "生成完成 ✓"
-
-        return (sampling_rate, waveform), "生成完成 ✓"
-
-    # ── 主题与样式 ────────────────────────────────────────
-
-    theme = gr.themes.Soft(
-        font=["Inter", "Arial", "sans-serif"],
-    )
-    css = """
-    .gradio-container {max-width: 100% !important; font-size: 16px !important;}
-    .gradio-container h1 {font-size: 1.5em !important;}
-    .gradio-container .prose {font-size: 1.1em !important;}
-    .compact-audio audio {height: 60px !important;}
-    .compact-audio .waveform {min-height: 80px !important;}
-    """
-
-    # ── 可复用的语言下拉框 ────────────────────────────────
-
-    def _lang_dropdown(label="语言 (可选)", value="Auto"):
-        return gr.Dropdown(
-            label=label,
-            choices=_ALL_LANGUAGES,
-            value=value,
-            allow_custom_value=False,
-            interactive=True,
-            info="选择 Auto 以自动检测语种。",
-        )
-
-    # ── 可复用的生成参数折叠面板 ──────────────────────────
-
-    def _gen_settings():
-        with gr.Accordion("生成参数 (可选)", open=False):
-            sp = gr.Slider(
-                0.5, 1.5, value=1.0, step=0.05,
-                label="语速 Speed",
-                info="1.0=正常。>1 加快，<1 减慢。设置时长后此项无效。",
-            )
-            du = gr.Number(
-                value=None,
-                label="时长 Duration (秒)",
-                info="留空使用语速控制，设置固定时长将覆盖语速。",
-            )
-            ns = gr.Slider(
-                4, 64, value=Config.num_step, step=1,
-                label="推理步数 Inference Steps",
-                info=f"默认 {Config.num_step}。越低越快，越高质量越好。",
-            )
-            dn = gr.Checkbox(
-                label="降噪 Denoise", value=True,
-                info="启用后对输出进行降噪处理。",
-            )
-            gs = gr.Slider(
-                0.0, 4.0, value=Config.guidance_scale, step=0.1,
-                label="引导强度 Guidance Scale (CFG)",
-                info=f"默认 {Config.guidance_scale}。",
-            )
-            pp = gr.Checkbox(
-                label="预处理参考音频 Preprocess Prompt", value=True,
-                info="对参考音频做静音去除和裁剪，为参考文本末尾补标点。",
-            )
-            po = gr.Checkbox(
-                label="后处理输出 Postprocess Output", value=True,
-                info="去除生成音频中的长静音。",
-            )
-        return ns, gs, dn, sp, du, pp, po
-
-    # ═════════════════════════════════════════════════════
-    # 界面布局
-    # ═════════════════════════════════════════════════════
-
-    with gr.Blocks(theme=theme, css=css, title="OmniVoice Web Demo") as demo:
-        gr.Markdown(
-            "# 🎤 OmniVoice Web Demo\n"
-            "基于 OmniVoice 的语音合成演示 — 支持语音克隆与音色设计。"
-        )
-
-        with gr.Tabs():
-            # ── Tab 1: 语音克隆 ────────────────────────────
-            with gr.TabItem("语音克隆 Voice Clone"):
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        clone_text = gr.Textbox(
-                            label="待合成文本 Text to Synthesize",
-                            lines=4,
-                            placeholder="输入需要合成的文本…",
-                        )
-                        clone_lang = _lang_dropdown("语言 (可选)", "Auto")
-                        clone_ref_audio = gr.Audio(
-                            label="参考音频 Reference Audio",
-                            type="filepath",
-                        )
-                        clone_ref_text = gr.Textbox(
-                            label="参考文本 (可选) Reference Text",
-                            lines=2,
-                            placeholder="留空则自动转录（需 ASR 模型）",
-                        )
-                        clone_instruct = gr.Textbox(
-                            label="附加指令 (可选) Instruct",
-                            lines=2,
-                            placeholder="例如：用温柔的语气朗读…",
-                        )
-                        clone_btn = gr.Button("生成 Generate", variant="primary")
-                    with gr.Column(scale=1):
-                        clone_output = gr.Audio(
-                            label="合成结果 Output Audio",
-                            type="filepath",
-                        )
-                        clone_status = gr.Textbox(label="状态 Status", lines=2)
-                        (
-                            clone_ns, clone_gs, clone_dn,
-                            clone_sp, clone_du, clone_pp, clone_po,
-                        ) = _gen_settings()
-
-                    def _clone_fn(
-                        text, lang, ref_aud, ref_txt, instruct,
-                        ns, gs, dn, sp, du, pp, po,
-                    ):
-                        return _gen_core(
-                            text=text, language=lang,
-                            ref_audio=ref_aud, instruct=instruct,
-                            num_step=ns, guidance_scale=gs,
-                            denoise=dn, speed=sp, duration=du,
-                            preprocess_prompt=pp, postprocess_output=po,
-                            mode="clone", ref_text=ref_txt or None,
-                        )
-
-                    clone_btn.click(
-                        _clone_fn,
-                        inputs=[
-                            clone_text, clone_lang, clone_ref_audio,
-                            clone_ref_text, clone_instruct,
-                            clone_ns, clone_gs, clone_dn,
-                            clone_sp, clone_du, clone_pp, clone_po,
-                        ],
-                        outputs=[clone_output, clone_status],
-                    )
-
-            # ── Tab 2: 音色设计 ────────────────────────────
-            with gr.TabItem("音色设计 Voice Design"):
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        ds_text = gr.Textbox(
-                            label="待合成文本 Text to Synthesize",
-                            lines=4,
-                            placeholder="输入需要合成的文本…",
-                        )
-                        ds_lang = _lang_dropdown("语言 (可选)", "Auto")
-                        ds_instruct = gr.Textbox(
-                            label="附加指令 / 风格描述 (可选)",
-                            lines=3,
-                            placeholder="例如：用温柔的女性声音朗读…",
-                        )
-                        ds_btn = gr.Button("生成 Generate", variant="primary")
-                        gr.Markdown(
-                            "**音色属性参考** — 可在指令中组合使用：\n\n"
-                            + "\n".join(
-                                f"- **{cat}**: {', '.join(opts)}"
-                                + (f"  \n  _{_ATTR_INFO.get(cat, '')}_"
-                                   if cat in _ATTR_INFO else "")
-                                for cat, opts in _CATEGORIES.items()
-                            )
-                        )
-                    with gr.Column(scale=1):
-                        ds_output = gr.Audio(
-                            label="合成结果 Output Audio",
-                            type="filepath",
-                        )
-                        ds_status = gr.Textbox(label="状态 Status", lines=2)
-                        (
-                            ds_ns, ds_gs, ds_dn,
-                            ds_sp, ds_du, ds_pp, ds_po,
-                        ) = _gen_settings()
-
-                        def _design_fn(
-                            text, lang, instruct,
-                            ns, gs, dn, sp, du, pp, po,
-                        ):
-                            return _gen_core(
-                                text=text, language=lang,
-                                ref_audio=None, instruct=instruct,
-                                num_step=ns, guidance_scale=gs,
-                                denoise=dn, speed=sp, duration=du,
-                                preprocess_prompt=pp, postprocess_output=po,
-                                mode="design",
-                            )
-
-                        ds_btn.click(
-                            _design_fn,
-                            inputs=[
-                                ds_text, ds_lang, ds_instruct,
-                                ds_ns, ds_gs, ds_dn,
-                                ds_sp, ds_du, ds_pp, ds_po,
-                            ],
-                            outputs=[ds_output, ds_status],
-                        )
-
-    return demo
 
 
 # ── 主入口 ────────────────────────────────────────────────
 
 def main(argv: Optional[list[str]] = None) -> int:
+    global _DEVICE
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
     )
 
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    # 每次启动先清扫上次异常退出残留的 omni 生成临时文件
+    _cleanup_leftover_tmp()
 
-    device = args.device or get_best_device()
-    load_asr = not args.no_asr
+    args = build_parser().parse_args(argv)
+    _DEVICE = args.device or get_best_device()
 
-    # 模型路径解析（resolve_path 引用自 omni.py）
-    resolved_path = resolve_path(
+    # 模型预热加载（复用 omni.py 的 _load_model：本地优先、带全局缓存；
+    # 内部会经 resolve_path 解析并打印模型目录）
+    cfg = Config(
         model_id=args.model_id,
-        local_path=args.model_path,
+        model_path=args.model_path,
+        device=_DEVICE,
+        asr_model=args.asr_model or "",
     )
-    logger.info("模型路径: %s", resolved_path)
+    _load_model(cfg, logger)
 
-    # 模型加载（全程 float32）
-    model = load_model(
-        resolved_path=resolved_path,
-        device=device,
-        load_asr=load_asr,
-        asr_model_name=args.asr_model,
-    )
-
-    demo = build_demo(model)
-
-    logger.info(
-        "启动 Web 界面 → http://%s:%d",
-        args.ip, args.port,
-    )
+    demo = build_demo()
+    url = f"http://localhost:{args.port}"
+    logger.info("启动 Web 界面 → %s", url)
     demo.queue().launch(
         server_name=args.ip,
         server_port=args.port,
         share=args.share,
         root_path=args.root_path,
+        theme=_THEME,
+        css=_CSS,
+        # 启动后自动用默认浏览器打开 localhost:port（--no-browser 可关闭）
+        inbrowser=not args.no_browser,
     )
     return 0
 
