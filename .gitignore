@@ -19,3 +19,6 @@ models/
 
 # Web 生成临时目录（项目内 .tmp，退出时清理）
 .tmp/
+
+# Reasonix 工具目录
+.reasonix/

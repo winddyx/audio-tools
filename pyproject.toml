@@ -7,6 +7,7 @@ dependencies = [
     "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@28bc0889d92110491d726a9c79f26a895db5a074",
     "soundfile",
     "huggingface_hub",
+    "funasr>=1.4.2",
 ]
 
 [dependency-groups]

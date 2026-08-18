@@ -6,7 +6,7 @@ OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 （omni.py 是唯一实现，本文件只做 UI 封装，不重写模型逻辑）：
 - 模型加载: omni._load_model()（内部经 resolve_path 解析路径，本地优先、
   命中缓存则跳过联网，带全局缓存，复用 CLI 同款加载路径）
-- 参考文本转写: omni._transcribe_ref()（Qwen3-ASR，懒加载）
+- 参考文本转写: omni._transcribe_ref()（FunASR/SenseVoiceSmall，懒加载）
 - 生成参数: 参数名与 omni._GEN_PARAM_ENVS 完全一致
 
 用法:
@@ -194,8 +194,8 @@ def build_demo() -> gr.Blocks:
                 if not ref_audio:
                     return None, "请上传参考音频。"
                 if not ref_text:
-                    # 复用 omni.py 的 Qwen3-ASR 转写（懒加载；语言代码随 cfg 传入，
-                    # 由 omni._asr_language 映射为 Qwen3-ASR 语言全名强制转写）
+                    # 复用 omni.py 的 SenseVoiceSmall 转写（懒加载；语言代码随 cfg 传入，
+                    # 由 omni._asr_language 映射为 SenseVoice 语言代码强制转写）
                     asr_cfg = Config(device=_DEVICE, ref_audio=ref_audio,
                                      language=lang or "")
                     ref_text = _transcribe_ref(asr_cfg, logger)
@@ -259,7 +259,7 @@ def build_demo() -> gr.Blocks:
                     rt = gr.Textbox(
                         label="参考文本 (可选) Reference Text",
                         lines=2,
-                        placeholder="留空则用 Qwen3-ASR 自动转写参考音频",
+                        placeholder="留空则用 SenseVoiceSmall 自动转写参考音频",
                     )
                 if include_instruct:
                     it = gr.Textbox(
@@ -479,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--asr-model",
         default=os.environ.get("ASR_MODEL", Config.asr_model),
-        help=f"Qwen3-ASR 模型 ID/本地目录（默认: Qwen/Qwen3-ASR-1.7B-hf）",
+        help=f"SenseVoice 模型 ID/本地目录（默认: FunAudioLLM/SenseVoiceSmall）",
     )
     parser.add_argument(
         "--ip", default="0.0.0.0", help="监听地址（默认 0.0.0.0）",
