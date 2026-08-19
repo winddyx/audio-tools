@@ -17,13 +17,18 @@ OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
 import os
+import shutil
 import sys
+import time
 from typing import Any, Dict, Optional
 
 import gradio as gr
+import gradio.processing_utils as _gradio_proc
 import numpy as np
+import soundfile as sf
 
 from omnivoice.utils.lang_map import LANG_NAME_TO_ID, lang_display_name
 
@@ -53,6 +58,44 @@ _DEVICE: str = ""
 
 # 克隆页抽卡结果槽位数（也是抽卡次数上限，默认 2）
 _MAX_DRAWS = 8
+
+# 生成临时目录：项目根目录下 .tmp（非系统 /tmp），正常退出时 atexit 清理
+_TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tmp")
+atexit.register(shutil.rmtree, _TMP_DIR, ignore_errors=True)
+
+
+def _cleanup_leftover_tmp() -> None:
+    """每次启动清理项目 .tmp 目录（上次异常退出残留的生成文件）。
+
+    程序正常退出由 atexit 清理 .tmp；异常退出（如 SIGKILL）残留的
+    生成文件在此处统一清扫。
+    """
+    if os.path.isdir(_TMP_DIR):
+        shutil.rmtree(_TMP_DIR, ignore_errors=True)
+        logger.info("已清理项目临时目录: %s", _TMP_DIR)
+
+
+def _patch_gradio_audio_probe() -> None:
+    """兼容 Windows 常见"有 ffmpeg 无 ffprobe"环境。
+
+    gradio 展示音频文件路径时调用 processing_utils.audio_is_playable()
+    探测可播放性（内部走 ffprobe），ffprobe 缺失时抛
+    FFExecutableNotFoundError 导致生成成功但界面崩溃。该函数语义本就是
+    "探测失败视为可播放"（wav 浏览器原生可播），只是漏捕获了 ffprobe
+    可执行文件缺失的异常；这里补全为任何探测失败均返回 True。
+    """
+    _orig = _gradio_proc.audio_is_playable
+
+    def _safe(path: str) -> bool:
+        try:
+            return _orig(path)
+        except Exception:
+            return True
+
+    _gradio_proc.audio_is_playable = _safe
+
+
+_patch_gradio_audio_probe()
 
 # ── 启动行为配置（直接改这里的值，无需任何命令行参数/环境变量）──
 AUTO_OPEN_BROWSER = False  # True = 启动后自动用默认浏览器打开界面
@@ -150,6 +193,9 @@ def _gen_kwargs_from_ui(ui: Dict[str, Any]) -> Dict[str, Any]:
 # ── 构建 Gradio 界面 ─────────────────────────────────────
 
 def build_demo() -> gr.Blocks:
+    # 生成临时目录：项目根目录下 .tmp（退出时 atexit 清理，启动时清扫残留）
+    os.makedirs(_TMP_DIR, exist_ok=True)
+
     # ── 共用生成核心（模型调用全部走 omni.py）──────────────
 
     def _gen_core(
@@ -206,11 +252,18 @@ def build_demo() -> gr.Blocks:
         if hasattr(arr, "cpu"):  # torch.Tensor
             arr = arr.cpu().numpy()
         waveform = (np.clip(arr, -1.0, 1.0) * 32767).astype(np.int16)
-        # 返回 (采样率, int16 波形) 元组而非文件路径：gradio 对文件路径字符串
-        # 会用 ffprobe 探测可播放性（Windows 常见"有 ffmpeg 无 ffprobe"，触发
-        # FFExecutableNotFoundError）；传 (sr, data) 元组则 gradio 直接内联
-        # 保存为 wav 展示，不依赖系统 ffprobe，Windows/macOS 行为一致。
-        return (model.sampling_rate, waveform), "生成完成 ✓"
+        # 文件名 = 生成完成时的 unix 时间戳（秒）；同秒内冲突则递增秒数
+        ts = int(time.time())
+        out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
+        while os.path.exists(out_path):
+            ts += 1
+            out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
+        sf.write(out_path, waveform, model.sampling_rate)
+        # 返回文件路径而非 (sr, data) 元组：路径分支让 gradio 以文件 basename
+        # （unix 时间戳）作为下载文件名；gradio 对路径的 ffprobe 可播放性探测
+        # 已由 _patch_gradio_audio_probe() 兜底（ffprobe 缺失时视为可播放），
+        # Windows 常见"有 ffmpeg 无 ffprobe"不再抛 FFExecutableNotFoundError。
+        return out_path, "生成完成 ✓"
 
     # ── 主题与样式（gradio 6: 传参到 launch()，不传 Blocks 构造器）────
 
@@ -495,6 +548,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     args = build_parser().parse_args(argv)
     _DEVICE = args.device or get_best_device()
+
+    # 清扫上次异常退出残留的临时生成文件
+    _cleanup_leftover_tmp()
 
     # 模型预热加载（复用 omni.py 的 _load_model：本地优先、带全局缓存；
     # 内部会经 resolve_path 解析并打印模型目录）
