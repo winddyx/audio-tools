@@ -6,7 +6,7 @@
 - **声音设计**：用指令（如 `female, low pitch, british accent`）合成指定音色
 - **自动音色**：不传参考音频与指令，模型自动选择音色
 
-提供 CLI（`omni.py`）与 Web 界面（`web.py`），两者共用同一套模型逻辑（`omni.py` 是唯一实现）。
+提供 CLI（`cli.py`）与 Web 界面（`web.py`），两者共用同一套模型逻辑（`omni.py` 核心库：设备检测 / 模型下载与加载 / ASR 转写 / 生成参数）。
 
 ## 安装
 
@@ -14,20 +14,29 @@
 uv sync        # 安装依赖（含 omnivoice 包）
 ```
 
+> **设备加速**:`uv sync` 自动按平台选择 PyTorch 构建——
+> - **Windows / Linux**:torch 固定为 PyTorch 官方 `xpu` 构建（2.11.0+xpu），
+>   有 Intel Arc 显卡时自动用 GPU 加速（`DEVICE=xpu` 或自动检测）；无 Intel GPU
+>   的机器删除 `pyproject.toml` 中 `[tool.uv]` 与 `[[tool.uv.index]]` 两段、
+>   依赖列表里的 `torch==2.11.0`/`torchaudio==2.11.0` 四行，即回退 PyPI 的
+>   CUDA/CPU 构建。
+> - **macOS (Apple Silicon)**:自动从 PyPI 安装带 `macosx` wheel 的 torch，
+>   用 MPS 加速（`DEVICE=mps` 或自动检测）。
+
 ## CLI 用法
 
 ```bash
 # 语音克隆（ref_text 省略时自动用 FunASR/SenseVoiceSmall 转写参考音频）
-uv run python omni.py <ref_audio.wav> <text.txt> -l yue
+uv run python cli.py <ref_audio.wav> <text.txt> -l yue
 
 # 声音设计
-uv run python omni.py --text <text.txt> --instruct "female, low pitch, british accent"
+uv run python cli.py --text <text.txt> --instruct "female, low pitch, british accent"
 
 # 自动音色
-uv run python omni.py --text <text.txt>
+uv run python cli.py --text <text.txt>
 
 # ASR 转写参考音频（FunASR/SenseVoiceSmall，用于校对/数据集）
-uv run python omni.py --transcribe <ref_audio.wav>
+uv run python cli.py --transcribe <ref_audio.wav>
 ```
 
 生成结果输出到文本文件所在目录，文件名 `<文本名>.<unix时间戳>.wav`。
@@ -58,9 +67,9 @@ uv run python web.py --no-browser    # 不自动打开浏览器
 |---|---|
 | `LANGUAGE` / `--language` | 合成语言（如 `yue`/`en`） |
 | `DRAW_COUNT` | CLI 抽卡次数（默认 2） |
-| `DEVICE` / `--device` | `cuda` / `mps` / `cpu`（默认自动检测） |
+| `DEVICE` / `--device` | `cuda` / `xpu` / `mps` / `cpu`（默认自动检测） |
 | `THREADS` | CPU 线程数（默认 `os.cpu_count()`，用满所有逻辑核心；可设小值如 `4` 留出核心给其他任务） |
-| `DTYPE` | 覆盖默认精度（CUDA fp16，MPS/CPU fp32） |
+| `DTYPE` | 覆盖默认精度（CUDA fp16，XPU bfloat16，MPS/CPU fp32） |
 | `MODEL_PATH` / `OMNIVOICE_MODEL_ID` | 本地模型目录 / 模型 ID |
 | `ASR_MODEL` | SenseVoice 模型 ID/本地目录（默认 `FunAudioLLM/SenseVoiceSmall`） |
 | `ASR_HUB` | SenseVoice 下载源：`hf`（默认，HuggingFace）/ `ms`（ModelScope） |

@@ -8,7 +8,42 @@ dependencies = [
     "soundfile",
     "huggingface_hub",
     "funasr>=1.4.2",
+    # 显式声明为直接依赖 + pin 版本（no-sources-package 忽略 omnivoice 把
+    # torch 锁到 cu128 的 sources 后，xpu index 会选最新版 2.13.x；这里 pin
+    # 到已实测稳定的 2.11.0，与当前 .venv 一致，避免无谓重装）。
+    # marker 限定 linux/win：macOS 没有 xpu 构建，torch 由 omnivoice 传递
+    # 依赖从 PyPI 安装（2.11.0 在 PyPI 有 macosx wheel）。
+    "torch==2.11.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "torchaudio==2.11.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "torch==2.11.0; sys_platform == 'darwin'",
+    "torchaudio==2.11.0; sys_platform == 'darwin'",
 ]
 
 [dependency-groups]
 dev = []
+
+# ── Intel oneAPI (Arc GPU) 加速 ───────────────────────────
+# torch/torchaudio 从 PyTorch 官方 xpu index 安装（torch 2.11.0+xpu，自带
+# oneAPI/SYCL 运行时，Windows 上驱动 Arc 显卡）；无 Intel GPU 的机器删除
+# 本段即可回退 PyPI 的 CUDA/CPU 构建。
+#
+# no-sources-package：忽略 omnivoice 依赖内部把 torch/torchaudio 锁到
+# cu128 index 的 sources 配置（uv 的 tool.uv.sources 对 git 依赖内嵌的
+# 声明无法覆盖，只能按包名忽略），让 torch 走下方定义的 xpu index
+# （显式 index 按定义顺序优先于 PyPI）。
+[tool.uv]
+no-sources-package = ["torch", "torchaudio"]
+
+# 跨 index 找版本：darwin 在 xpu index 无 wheel 时回退到 PyPI 的 macosx
+# 构建（两个 index 均为官方源，风险可控）。
+index-strategy = "unsafe-best-match"
+
+# 强制把 macOS(Apple Silicon) 也纳入解析：xpu index 没有 mac wheel，
+# uv 会为 darwin 平台自动选择 PyPI 上带 macosx wheel 的 torch 版本。
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
+
+# pytorch-xpu 作为默认候选 index（排在 PyPI 之前）：win/linux 上 torch
+# 从 xpu index 拿 2.11.0+xpu；macOS 无 xpu wheel，uv 会自动落到 PyPI。
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"

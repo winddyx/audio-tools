@@ -3,7 +3,7 @@
 OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 
 模型加载 / 路径解析 / ASR 转写 / 生成参数 全部复用 omni.py 的模块
-（omni.py 是唯一实现，本文件只做 UI 封装，不重写模型逻辑）：
+（omni.py 是唯一实现核心，CLI 见 cli.py；本文件只做 UI 封装，不重写模型逻辑）：
 - 模型加载: omni._load_model()（内部经 resolve_path 解析路径，本地优先、
   命中缓存则跳过联网，带全局缓存，复用 CLI 同款加载路径）
 - 参考文本转写: omni._transcribe_ref()（FunASR/SenseVoiceSmall，懒加载）
@@ -218,7 +218,12 @@ def build_demo() -> gr.Blocks:
             logger.exception("生成失败")
             return None, f"错误: {type(e).__name__}: {e}"
 
-        waveform = (audios[0] * 32767).astype(np.int16)
+        # 转 numpy + 裁剪到 [-1, 1]：上游 generate() 可能返回 torch.Tensor
+        # （无 .astype），且超界采样点直接 cast 会 int16 回绕产生爆音
+        arr = audios[0]
+        if hasattr(arr, "cpu"):  # torch.Tensor
+            arr = arr.cpu().numpy()
+        waveform = (np.clip(arr, -1.0, 1.0) * 32767).astype(np.int16)
         # 文件名 = 生成完成时的 unix 时间戳（秒）；同秒内冲突则递增秒数
         ts = int(time.time())
         out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
@@ -474,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--device", default=None,
-        help=f"推理设备（默认自动检测: CUDA > MPS > CPU）",
+        help=f"推理设备（默认自动检测: CUDA > XPU > MPS > CPU）",
     )
     parser.add_argument(
         "--asr-model",
