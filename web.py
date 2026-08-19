@@ -17,17 +17,13 @@ OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 from __future__ import annotations
 
 import argparse
-import atexit
 import logging
 import os
-import shutil
 import sys
-import time
 from typing import Any, Dict, Optional
 
 import gradio as gr
 import numpy as np
-import soundfile as sf
 
 from omnivoice.utils.lang_map import LANG_NAME_TO_ID, lang_display_name
 
@@ -58,20 +54,6 @@ _DEVICE: str = ""
 # 克隆页抽卡结果槽位数（也是抽卡次数上限，默认 2）
 _MAX_DRAWS = 8
 
-# 生成临时目录：项目根目录下 .tmp（非系统 /tmp），正常退出时 atexit 清理
-_TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tmp")
-atexit.register(shutil.rmtree, _TMP_DIR, ignore_errors=True)
-
-
-def _cleanup_leftover_tmp() -> None:
-    """每次启动清理项目 .tmp 目录（上次异常退出残留的生成文件）。
-
-    程序正常退出由 atexit 清理 .tmp；异常退出（如 SIGKILL）残留的
-    生成文件在此处统一清扫。
-    """
-    if os.path.isdir(_TMP_DIR):
-        shutil.rmtree(_TMP_DIR, ignore_errors=True)
-        logger.info("已清理项目临时目录: %s", _TMP_DIR)
 
 # ── 语言列表（显示名 → 代码）──────────────────────────────
 # LANG_NAME_TO_ID: 小写语言名 → ISO 639-3 代码（OmniVoice 支持 600+ 语言）
@@ -165,9 +147,6 @@ def _gen_kwargs_from_ui(ui: Dict[str, Any]) -> Dict[str, Any]:
 # ── 构建 Gradio 界面 ─────────────────────────────────────
 
 def build_demo() -> gr.Blocks:
-    # 生成临时目录：项目根目录下 .tmp（退出时 atexit 清理，启动时清扫残留）
-    os.makedirs(_TMP_DIR, exist_ok=True)
-
     # ── 共用生成核心（模型调用全部走 omni.py）──────────────
 
     def _gen_core(
@@ -224,14 +203,11 @@ def build_demo() -> gr.Blocks:
         if hasattr(arr, "cpu"):  # torch.Tensor
             arr = arr.cpu().numpy()
         waveform = (np.clip(arr, -1.0, 1.0) * 32767).astype(np.int16)
-        # 文件名 = 生成完成时的 unix 时间戳（秒）；同秒内冲突则递增秒数
-        ts = int(time.time())
-        out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
-        while os.path.exists(out_path):
-            ts += 1
-            out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
-        sf.write(out_path, waveform, model.sampling_rate)
-        return out_path, "生成完成 ✓"
+        # 返回 (采样率, int16 波形) 元组而非文件路径：gradio 对文件路径字符串
+        # 会用 ffprobe 探测可播放性（Windows 常见"有 ffmpeg 无 ffprobe"，触发
+        # FFExecutableNotFoundError）；传 (sr, data) 元组则 gradio 直接内联
+        # 保存为 wav 展示，不依赖系统 ffprobe，Windows/macOS 行为一致。
+        return (model.sampling_rate, waveform), "生成完成 ✓"
 
     # ── 主题与样式（gradio 6: 传参到 launch()，不传 Blocks 构造器）────
 
@@ -361,7 +337,7 @@ def build_demo() -> gr.Blocks:
                         ns, gs, ts, dn, po, nm, sp, du,
                     ):
                         draw_count = max(1, min(int(draw_count or 2), _MAX_DRAWS))
-                        results: list[str] = []
+                        results: list = []
                         for i in range(draw_count):
                             out, msg = _gen_core(
                                 text=text, language=lang,
@@ -517,9 +493,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
     )
-
-    # 每次启动先清扫上次异常退出残留的 omni 生成临时文件
-    _cleanup_leftover_tmp()
 
     args = build_parser().parse_args(argv)
     _DEVICE = args.device or get_best_device()
