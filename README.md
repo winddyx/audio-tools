@@ -44,16 +44,15 @@ uv run python cli.py --transcribe <ref_audio.wav>
 ## Web 界面
 
 ```bash
-uv run python web.py                 # 启动后自动打开浏览器 → http://localhost:38001
+uv run python web.py                 # 启动后访问 http://localhost:38001
 uv run python web.py --port 8000     # 自定义端口
 uv run python web.py --share         # 创建公开链接
-uv run python web.py --no-browser    # 不自动打开浏览器
 ```
 
 - 监听 `0.0.0.0:38001`（`--ip`/`--port` 可改）
+- **自动打开浏览器**：由 `web.py` 顶部变量 `AUTO_OPEN_BROWSER` 控制（默认 `False`，改为 `True` 则启动后自动用默认浏览器打开），无需命令行参数
 - 语音克隆页支持**抽卡**：设置次数 N，一次生成 N 个结果供挑选
 - 生成参数（推理步数、引导强度、语速、时长等）与参考文本/附加指令在"生成参数"折叠面板中
-- 生成文件在项目内 `.tmp/`，退出时自动清理，每次启动清扫残留
 
 ## 模型管理
 

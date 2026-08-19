@@ -54,6 +54,9 @@ _DEVICE: str = ""
 # 克隆页抽卡结果槽位数（也是抽卡次数上限，默认 2）
 _MAX_DRAWS = 8
 
+# ── 启动行为配置（直接改这里的值，无需任何命令行参数/环境变量）──
+AUTO_OPEN_BROWSER = False  # True = 启动后自动用默认浏览器打开界面
+
 
 # ── 语言列表（显示名 → 代码）──────────────────────────────
 # LANG_NAME_TO_ID: 小写语言名 → ISO 639-3 代码（OmniVoice 支持 600+ 语言）
@@ -477,10 +480,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--share", action="store_true", default=False,
         help="创建公开链接",
     )
-    parser.add_argument(
-        "--no-browser", action="store_true", default=False,
-        help="不自动打开浏览器（默认启动后自动用默认浏览器打开 localhost:port）",
-    )
     return parser
 
 
@@ -517,8 +516,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         root_path=args.root_path,
         theme=_THEME,
         css=_CSS,
-        # 启动后自动用默认浏览器打开 localhost:port（--no-browser 可关闭）
-        inbrowser=not args.no_browser,
+        # 是否自动打开浏览器由 web.py 顶部的 AUTO_OPEN_BROWSER 变量控制
+        inbrowser=AUTO_OPEN_BROWSER,
     )
     return 0
 
