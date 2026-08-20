@@ -21,7 +21,11 @@ uv sync        # 安装依赖（含 omnivoice 包）
 >   依赖列表里的 `torch==2.11.0`/`torchaudio==2.11.0` 四行，即回退 PyPI 的
 >   CUDA/CPU 构建。
 > - **macOS (Apple Silicon)**:自动从 PyPI 安装带 `macosx` wheel 的 torch，
->   用 MPS 加速（`DEVICE=mps` 或自动检测）。
+>   用 MPS 加速（`DEVICE=mps` 或自动检测）。MPS 设备下自动解除 PyTorch
+>   MPS 分配器内存上限（`PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0`，避免系统
+>   其它进程占用高时连几十 MiB 都申请不到而报 `MPS backend out of memory`）；
+>   若加载/生成阶段仍触发 MPS OOM，自动改用 CPU 重试并提示（可用
+>   `DEVICE=cpu` 或显式设置该环境变量关闭自动解除）。
 
 ## CLI 用法
 

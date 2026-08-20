@@ -35,6 +35,7 @@ from omnivoice.utils.lang_map import LANG_NAME_TO_ID, lang_display_name
 # 模型逻辑全部复用 omni.py（唯一实现）
 from omni import (
     Config,
+    generate,
     get_best_device,
     _load_model,
     _transcribe_ref,
@@ -227,7 +228,8 @@ def build_demo() -> gr.Blocks:
                     asr_cfg = Config(device=_DEVICE, ref_audio=ref_audio,
                                      language=lang or "")
                     ref_text = _transcribe_ref(asr_cfg, logger)
-                audios = model.generate(
+                audios = generate(
+                    cfg, logger,
                     text=text.strip(),
                     language=lang,
                     ref_audio=ref_audio,
@@ -236,7 +238,8 @@ def build_demo() -> gr.Blocks:
                     **kw,
                 )
             else:
-                audios = model.generate(
+                audios = generate(
+                    cfg, logger,
                     text=text.strip(),
                     language=lang,
                     instruct=instruct or None,

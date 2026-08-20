@@ -23,6 +23,7 @@ from typing import Optional
 
 from omni import (
     Config,
+    generate,
     get_best_device,
     _gen_kwargs,
     _load_model,
@@ -243,7 +244,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             spinner.start()
             t1 = time.time()
             try:
-                audios = model.generate(
+                audios = generate(
+                    cfg, logger,
                     text=text,
                     language=cfg.language or None,
                     ref_audio=cfg.ref_audio or None,

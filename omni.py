@@ -66,8 +66,34 @@ def get_best_device() -> str:
     if xpu is not None and xpu.is_available():
         return "xpu"
     if torch.backends.mps.is_available():
+        _apply_mps_memory_settings("mps", logging.getLogger("omni"))
         return "mps"
     return "cpu"
+
+
+def _is_mps_oom(e: Exception) -> bool:
+    """MPS 后端内存不足（"MPS backend out of memory (…)" 报错）？"""
+    return (isinstance(e, RuntimeError)
+            and "MPS" in str(e)
+            and "out of memory" in str(e).lower())
+
+
+def _apply_mps_memory_settings(device: str, logger: logging.Logger) -> None:
+    """MPS 设备下解除 PyTorch MPS 分配器的内存上限（幂等，可重复调用）。
+
+    MPS 默认上限接近系统总内存，且受系统其它进程占用影响——其它占用高时
+    连几十 MiB 都申请不到（报 "MPS backend out of memory (other allocations: …)"）。
+    设 PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 解除上限，按需向系统申请（可能
+    挤占系统内存，故 MPS OOM 时另有自动回退 CPU 兜底）。须在 MPS 分配器首次
+    初始化前设置；用户已显式设置该变量时尊重用户值。
+    """
+    if device != "mps":
+        return
+    if os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO"):
+        return
+    os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+    logger.info("⚙️  MPS 内存上限已解除（PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0；"
+                "MPS OOM 时自动回退 CPU）")
 
 
 _THREAD_CONFIGURED = False  # CPU 线程池已配置（幂等标志，避免重复设置/重复日志）
@@ -280,6 +306,9 @@ def _load_model(cfg: Config, logger: logging.Logger):
     if _OMNIVOICE_MODEL is not None:
         return _OMNIVOICE_MODEL
 
+    # MPS 设备先解除分配器内存上限（幂等；显式 --device mps 路径也在此生效）
+    _apply_mps_memory_settings(cfg.device, logger)
+
     # CPU 设备下先把线程池配满再加载模型（幂等；web 复用此路径，自动生效）
     _configure_cpu_threads(cfg, logger)
 
@@ -304,11 +333,44 @@ def _load_model(cfg: Config, logger: logging.Logger):
 
     logger.info("⏳ 加载 OmniVoice 模型（%s, %s）…", cfg.device, dtype)
     t0 = time.time()
-    _OMNIVOICE_MODEL = OmniVoice.from_pretrained(
-        resolved, device_map=cfg.device, dtype=dtype,
-    )
+    try:
+        _OMNIVOICE_MODEL = OmniVoice.from_pretrained(
+            resolved, device_map=cfg.device, dtype=dtype,
+        )
+    except RuntimeError as e:
+        if not _is_mps_oom(e) or cfg.device != "mps":
+            raise
+        # MPS 内存不足（其它进程占用高时连小分配都失败）：自动改用 CPU 重试
+        logger.warning("⚠️ MPS 内存不足（%s），自动改用 CPU 加载 …", e)
+        cfg.device = "cpu"
+        dtype = getattr(torch, cfg.dtype) if cfg.dtype else getattr(
+            torch, _default_dtype("cpu")
+        )
+        _OMNIVOICE_MODEL = OmniVoice.from_pretrained(
+            resolved, device_map="cpu", dtype=dtype,
+        )
     logger.info("✓ 模型加载: %.1fs (%s)", time.time() - t0, cfg.device)
     return _OMNIVOICE_MODEL
+
+
+def generate(cfg: Config, logger: logging.Logger, **kwargs):
+    """model.generate() 包装：MPS 内存不足时自动改用 CPU 重载模型并重试一次。
+
+    生成阶段若触发 MPS OOM（长文本峰值内存），清除全局模型缓存、以 CPU 重新
+    加载（重载只发生一次，后续走缓存）后重试；CLI 与 web 共用本函数。
+    """
+    model = _load_model(cfg, logger)
+    try:
+        return model.generate(**kwargs)
+    except RuntimeError as e:
+        if not _is_mps_oom(e) or cfg.device != "mps":
+            raise
+        global _OMNIVOICE_MODEL
+        _OMNIVOICE_MODEL = None  # 强制按 CPU 重载
+        cfg.device = "cpu"
+        logger.warning("⚠️ 生成时 MPS 内存不足（%s），自动改用 CPU 重试 …", e)
+        model = _load_model(cfg, logger)
+        return model.generate(**kwargs)
 
 
 # ── ASR（FunASR / SenseVoiceSmall）───────────────────────
@@ -384,6 +446,9 @@ def _asr_model(cfg: Config, logger: logging.Logger):
     if _ASR_MODEL is not None:
         return _ASR_MODEL
 
+    # MPS 设备先解除分配器内存上限（幂等）
+    _apply_mps_memory_settings(cfg.device or "cpu", logger)
+
     # --transcribe / 参考音频转写路径不加载 TTS 模型，ASR 走 CPU 时同样配满线程
     _configure_cpu_threads(cfg, logger)
 
@@ -427,6 +492,15 @@ def _asr_model(cfg: Config, logger: logging.Logger):
         kwargs["vad_model"] = vad
         kwargs["vad_kwargs"] = {"max_single_segment_time": 30000}
     try:
+        _ASR_MODEL = AutoModel(**kwargs)
+    except RuntimeError as e:
+        if not _is_mps_oom(e) or device != "mps":
+            raise
+        # MPS 内存不足：SenseVoice 改用 CPU 重试（小模型，CPU 足够实时）
+        logger.warning("⚠️ MPS 内存不足（%s），SenseVoice 改用 CPU 加载 …", e)
+        device = "cpu"
+        cfg.device = "cpu"
+        kwargs["device"] = "cpu"
         _ASR_MODEL = AutoModel(**kwargs)
     except Exception as e:
         # funasr 在模型缺失/下载失败时抛的异常信息不含 ASR 上下文，包一层明确报错
