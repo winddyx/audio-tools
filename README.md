@@ -6,13 +6,24 @@
 - **声音设计**：用指令（如 `female, low pitch, british accent`）合成指定音色
 - **自动音色**：不传参考音频与指令，模型自动选择音色
 
-提供 CLI（`cli.py`）与 Web 界面（`web.py`），两者共用同一套模型逻辑（`omni.py` 核心库：设备检测 / 模型下载与加载 / ASR 转写 / 生成参数）。
+提供 CLI（`cli.py`）与 Web 界面（`web.py`），两者共用同一套核心（`src/` 包：设备检测 / 模型下载与加载 / ASR 转写 / 生成参数），并通过业务文件顶部的 `_BACKEND` 变量在两种推理后端间切换：
+
+| 后端 | 说明 | 模型 |
+|---|---|---|
+| `gguf`（默认） | C++/GGML 推理（[omnivoice.cpp](https://github.com/ServeurpersoCom/omnivoice.cpp)），输出 24 kHz | [Serveurperso/OmniVoice-GGUF](https://huggingface.co/Serveurperso/OmniVoice-GGUF) **Q8_0** 量化 |
+| `transformers` | 原 transformers 实现（进程内推理） | [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) |
 
 ## 安装
 
 ```bash
-uv sync        # 安装依赖（含 omnivoice 包）
+uv sync        # 安装依赖（含 omnivoice 包，transformers 后端需要）
 ```
+
+> **GGUF 后端（默认）首次运行**：自动完成两件事（均只需一次，之后离线复用）——
+> 1. `git clone` + 编译 `omnivoice.cpp` 到项目内 `vendor/omnivoice.cpp/`（gitignore，约 10-20 分钟）；
+> 2. 经 HuggingFace 下载 `omnivoice-base-Q8_0.gguf`（656MB）+ `omnivoice-tokenizer-Q8_0.gguf`（289MB）到 HF 默认缓存（有进度条）。
+>
+> 已编译的机器可用 `OMNIVOICE_CPP_BIN` 直接指定二进制、`OMNIVOICE_CPP_SRC` 指向已有源码，跳过自动 clone/编译。
 
 > **设备加速**:`uv sync` 自动按平台选择 PyTorch 构建——
 > - **Windows / Linux**:torch 固定为 PyTorch 官方 `xpu` 构建（2.11.0+xpu），
@@ -26,6 +37,9 @@ uv sync        # 安装依赖（含 omnivoice 包）
 >   其它进程占用高时连几十 MiB 都申请不到而报 `MPS backend out of memory`）；
 >   若加载/生成阶段仍触发 MPS OOM，自动改用 CPU 重试并提示（可用
 >   `DEVICE=cpu` 或显式设置该环境变量关闭自动解除）。
+>
+> GGUF 后端的设备映射（`GGML_BACKEND`）：`mps → Metal`、`cuda → CUDA0`、`cpu → CPU`；
+> `xpu`/未指定交给运行时自动选择。设备推理失败自动回退 CPU 重试一次。
 
 ## CLI 用法
 
@@ -56,13 +70,24 @@ uv run python web.py --share         # 创建公开链接
 - 监听 `0.0.0.0:38001`（`--ip`/`--port` 可改）
 - **自动打开浏览器**：由 `web.py` 顶部变量 `AUTO_OPEN_BROWSER` 控制（默认 `False`，改为 `True` 则启动后自动用默认浏览器打开），无需命令行参数
 - 语音克隆页支持**抽卡**：设置次数 N，一次生成 N 个结果供挑选
-- 生成参数（推理步数、引导强度、语速、时长等）与参考文本/附加指令在"生成参数"折叠面板中
+- 生成参数（推理步数、引导强度、语速、时长等）与参考文本/附加指令在"生成参数"折叠面板中（GGUF 后端仅支持 `steps` / `denoise` / `chunk-duration` / `chunk-threshold` / `duration` 子集，其余忽略）
+
+## 切换推理后端
+
+业务文件（`cli.py` / `web.py`）顶部各有一个 `_BACKEND` 变量：
+
+```python
+_BACKEND = "gguf"          # 默认：C++/GGML（Q8_0 量化）
+# _BACKEND = "transformers" # 原 k2-fsa/OmniVoice transformers 实现
+```
+
+改完直接运行即可；共享核心与另一后端代码均保留（`src/backends/`），随时可切回。
 
 ## 模型管理
 
 - 模型统一由 HuggingFace 管理，落在默认缓存（`~/.cache/huggingface`，或 `HF_HOME` / `HF_HUB_CACHE`）
 - **本地优先**：模型已完整缓存时直接复用，跳过一切联网；`HF_LOCAL_FIRST=0` 可关闭并强制联网校验更新
-- 直连 huggingface.co 失败时自动改用 hf-mirror.com 镜像重试（`HF_NO_MIRROR_FALLBACK=1` 关闭；此兜底仅对 OmniVoice 主模型生效，ASR 模型由 funasr 经 huggingface_hub 下载，遵循 `HF_ENDPOINT`）
+- 直连 huggingface.co 失败时自动改用 hf-mirror.com 镜像重试（`HF_NO_MIRROR_FALLBACK=1` 关闭；覆盖 GGUF 权重、transformers 权重与 ASR 模型，均遵循 `HF_ENDPOINT`）
 
 ## 常用环境变量
 
@@ -72,8 +97,12 @@ uv run python web.py --share         # 创建公开链接
 | `DRAW_COUNT` | CLI 抽卡次数（默认 2） |
 | `DEVICE` / `--device` | `cuda` / `xpu` / `mps` / `cpu`（默认自动检测） |
 | `THREADS` | CPU 线程数（默认 `os.cpu_count()`，用满所有逻辑核心；可设小值如 `4` 留出核心给其他任务） |
-| `DTYPE` | 覆盖默认精度（CUDA/XPU bfloat16，MPS/CPU fp32） |
-| `MODEL_PATH` / `OMNIVOICE_MODEL_ID` | 本地模型目录 / 模型 ID |
+| `DTYPE` | 仅 transformers 后端：覆盖默认精度（CUDA/XPU bfloat16，MPS/CPU fp32）；GGUF 量化固定 Q8_0 不适用 |
+| `MODEL_PATH` / `OMNIVOICE_MODEL_ID` | transformers 后端：本地模型目录 / 模型 ID |
+| `OMNIVOICE_CPP_BIN` | GGUF 后端：指定已编译的 `omnivoice-tts` 二进制（跳过自动编译） |
+| `OMNIVOICE_CPP_SRC` | GGUF 后端：指定 omnivoice.cpp 源码目录（默认项目内 `vendor/omnivoice.cpp`） |
+| `OMNIVOICE_CPP_BUILD_ARGS` | GGUF 后端：追加 cmake 参数（如 `-DGGML_CUDA=ON`） |
+| `OMNIVOICE_GGUF_REPO` / `OMNIVOICE_GGUF_BASE` / `OMNIVOICE_GGUF_CODEC` | GGUF 后端：权重仓库 ID / base 文件 / codec 文件（默认 Q8_0 双文件） |
 | `ASR_MODEL` | SenseVoice 模型 ID/本地目录（默认 `FunAudioLLM/SenseVoiceSmall`） |
 | `ASR_HUB` | SenseVoice 下载源：`hf`（默认，HuggingFace）/ `ms`（ModelScope） |
 | `ASR_VAD` | VAD 切分模型（默认 `fsmn-vad`；设 `0` 关闭，仅适合短音频） |

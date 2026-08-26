@@ -7,8 +7,8 @@ OmniVoice 配音工具 — CLI 入口（文本文件 → WAV）
   uv run python cli.py --text <text.txt>                       # 自动音色
   uv run python cli.py --transcribe <ref_audio.wav>            # ASR 转写（校对/数据集用）
 
-模型逻辑全部复用 omni.py（唯一实现），本文件只做参数解析、转写/生成流程编排
-与文件输出；Web 界面见 web.py。
+模型逻辑全部在 src/ 包（共享核心 + 推理后端），本文件只做参数解析、转写/生成
+流程编排与文件输出；后端默认 GGUF（Q8_0，见下方 _BACKEND），Web 界面见 web.py。
 """
 
 from __future__ import annotations
@@ -21,16 +21,31 @@ import threading
 import time
 from typing import Optional
 
-from omni import (
+from src import (
     Config,
-    generate,
     get_best_device,
     _gen_kwargs,
-    _load_model,
     _quiet_hf_logs,
     _to_bool,
     _transcribe_ref,
 )
+
+# ── 推理后端 ──────────────────────────────────────────────
+# "gguf"（默认）：C++/GGML 推理（Serveurperso/OmniVoice-GGUF Q8_0 量化，
+#   omnivoice.cpp；首次运行自动 clone+编译到项目内 vendor/ 并下载权重到
+#   HF 缓存；输出 24 kHz）。
+# "transformers"：原 k2-fsa/OmniVoice transformers 实现。
+# 两套后端接口一致（generate / _load_model），共享核心在 src/。
+_BACKEND = "gguf"
+
+if _BACKEND == "gguf":
+    from src.backends.gguf import _load_model, generate
+elif _BACKEND == "transformers":
+    from src.backends.transformers import _load_model, generate
+else:
+    raise ValueError(f"未知推理后端: {_BACKEND}（可选: gguf / transformers）")
+
+
 def _run_transcribe(cfg: Config, logger: logging.Logger) -> None:
     """ASR 子命令：用 SenseVoiceSmall 转写参考音频并打印文本，然后退出。
 

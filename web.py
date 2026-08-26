@@ -2,12 +2,12 @@
 """
 OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 
-模型加载 / 路径解析 / ASR 转写 / 生成参数 全部复用 omni.py 的模块
-（omni.py 是唯一实现核心，CLI 见 cli.py；本文件只做 UI 封装，不重写模型逻辑）：
-- 模型加载: omni._load_model()（内部经 resolve_path 解析路径，本地优先、
-  命中缓存则跳过联网，带全局缓存，复用 CLI 同款加载路径）
-- 参考文本转写: omni._transcribe_ref()（FunASR/SenseVoiceSmall，懒加载）
-- 生成参数: 参数名与 omni._GEN_PARAM_ENVS 完全一致
+模型加载 / 路径解析 / ASR 转写 / 生成参数 全部复用 src/ 包（共享核心
++ 推理后端，业务文件用 _BACKEND 变量切换；本文件只做 UI 封装）：
+- 模型加载: 后端 _load_model()（GGUF：编译 omnivoice.cpp + 下载 Q8_0 权重；
+  transformers：本地优先加载 k2-fsa/OmniVoice）
+- 参考文本转写: src.asr._transcribe_ref()（FunASR/SenseVoiceSmall，懒加载）
+- 生成参数: 参数名与 src.params._GEN_PARAM_ENVS 完全一致
 
 用法:
     uv run python web.py
@@ -32,16 +32,26 @@ import soundfile as sf
 
 from omnivoice.utils.lang_map import LANG_NAME_TO_ID, lang_display_name
 
-# 模型逻辑全部复用 omni.py（唯一实现）
-from omni import (
+# 共享核心与推理后端全部在 src/ 包
+from src import (
     Config,
-    generate,
     get_best_device,
-    _load_model,
     _quiet_hf_logs,
     _transcribe_ref,
     _GEN_PARAM_ENVS,
 )
+
+# ── 推理后端（与 cli.py 一致）────────────────────────────
+# "gguf"（默认）：C++/GGML 推理（Serveurperso/OmniVoice-GGUF Q8_0）
+# "transformers"：原 k2-fsa/OmniVoice transformers 实现
+_BACKEND = "gguf"
+
+if _BACKEND == "gguf":
+    from src.backends.gguf import _load_model, generate
+elif _BACKEND == "transformers":
+    from src.backends.transformers import _load_model, generate
+else:
+    raise ValueError(f"未知推理后端: {_BACKEND}（可选: gguf / transformers）")
 
 logger = logging.getLogger("omnivoice-web")
 
@@ -154,8 +164,8 @@ _ATTR_INFO = {
 }
 
 
-# ── 生成参数（复用 omni.py 的参数名，与 CLI 环境变量完全一致）──
-# 从 omni._GEN_PARAM_ENVS 派生：env 名 → (generate 参数名, cast)
+# ── 生成参数（复用 src.params 的参数名，与 CLI 环境变量完全一致）──
+# 从 src.params._GEN_PARAM_ENVS 派生：env 名 → (generate 参数名, cast)
 _WEB_PARAMS = {
     "num_step": ("推理步数 Inference Steps",
                  dict(minimum=4, maximum=64, step=1, value=32),
@@ -179,10 +189,11 @@ _WEB_PARAMS = {
 
 
 def _gen_kwargs_from_ui(ui: Dict[str, Any]) -> Dict[str, Any]:
-    """把 UI 参数打包成与 omni.py 环境变量同名同值的生成参数。
+    """把 UI 参数打包成与后端环境变量同名同值的生成参数。
 
-    只透传用户显式设置/调整过的项，其余交给模型默认值——
-    与 omni.py 的 _gen_kwargs() 语义一致（参数名取自 _GEN_PARAM_ENVS）。
+    只透传用户显式设置/调整过的项，其余交给后端默认值——
+    与 cli.py 的 _gen_kwargs() 语义一致（参数名取自 _GEN_PARAM_ENVS；
+    GGUF 后端只消费其中支持的子集，见 src/backends/gguf.py）。
     """
     kw: Dict[str, Any] = {}
     for env, (param, cast) in _GEN_PARAM_ENVS.items():
@@ -198,7 +209,7 @@ def build_demo() -> gr.Blocks:
     # 生成临时目录：项目根目录下 .tmp（退出时 atexit 清理，启动时清扫残留）
     os.makedirs(_TMP_DIR, exist_ok=True)
 
-    # ── 共用生成核心（模型调用全部走 omni.py）──────────────
+    # ── 共用生成核心（模型调用全部走后端 _load_model/generate）────
 
     def _gen_core(
         text: str,
@@ -212,7 +223,7 @@ def build_demo() -> gr.Blocks:
         if not text or not text.strip():
             return None, "请输入待合成文本。"
 
-        # 复用 omni.py：Config + 模型加载（全局缓存，本地优先）
+        # 复用后端：Config + _load_model（GGUF 首次运行自动编译/下载）
         cfg = Config(device=_DEVICE)
         model = _load_model(cfg, logger)
 
@@ -224,8 +235,8 @@ def build_demo() -> gr.Blocks:
                 if not ref_audio:
                     return None, "请上传参考音频。"
                 if not ref_text:
-                    # 复用 omni.py 的 SenseVoiceSmall 转写（懒加载；语言代码随 cfg 传入，
-                    # 由 omni._asr_language 映射为 SenseVoice 语言代码强制转写）
+                    # 复用 src.asr 的 SenseVoiceSmall 转写（懒加载；语言代码随
+                    # cfg 传入，由 asr._asr_language 映射为 SenseVoice 语言代码）
                     asr_cfg = Config(device=_DEVICE, ref_audio=ref_audio,
                                      language=lang or "")
                     ref_text = _transcribe_ref(asr_cfg, logger)
@@ -559,8 +570,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 清扫上次异常退出残留的临时生成文件
     _cleanup_leftover_tmp()
 
-    # 模型预热加载（复用 omni.py 的 _load_model：本地优先、带全局缓存；
-    # 内部会经 resolve_path 解析并打印模型目录）
+    # 模型预热加载（复用后端 _load_model：GGUF 首次运行自动编译/下载，
+    # 权重本地优先；transformers 内部经 resolve_path 解析并打印模型目录）
     cfg = Config(
         model_id=args.model_id,
         model_path=args.model_path,
