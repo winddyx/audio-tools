@@ -109,6 +109,7 @@ WEB_AUTO_OPEN_BROWSER = False
 | `OMNIVOICE_CPP_SRC` | GGUF 后端：指定 omnivoice.cpp 源码目录（默认项目内 `vendor/omnivoice.cpp`） |
 | `OMNIVOICE_CPP_BUILD_ARGS` | GGUF 后端：追加 cmake 参数（如 `-DGGML_CUDA=ON`） |
 | `OMNIVOICE_GGUF_REPO` / `OMNIVOICE_GGUF_BASE` / `OMNIVOICE_GGUF_CODEC` | GGUF 后端：权重仓库 ID / base 文件 / codec 文件（默认 BF16 双文件，可切 Q8_0 等） |
+| `OMNIVOICE_GGUF_DEBUG` | `1` 透传 omnivoice-tts 全部 stderr（ggml 内核编译 / MaskGIT 步进，默认静默、失败时打印尾部） |
 | `ASR_MODEL` | SenseVoice 模型 ID/本地目录（默认 `FunAudioLLM/SenseVoiceSmall`） |
 | `ASR_HUB` | SenseVoice 下载源：`hf`（默认，HuggingFace）/ `ms`（ModelScope） |
 | `ASR_VAD` | VAD 切分模型（默认 `fsmn-vad`；设 `0` 关闭，仅适合短音频） |

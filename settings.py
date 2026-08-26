@@ -53,6 +53,8 @@ GGUF_CODEC = _env("OMNIVOICE_GGUF_CODEC", "omnivoice-tokenizer-BF16.gguf")
 CPP_BIN = _env("OMNIVOICE_CPP_BIN", "")             # 已编译的 omnivoice-tts 绝对路径
 CPP_SRC = _env("OMNIVOICE_CPP_SRC", "")             # 已有源码目录（默认 vendor/omnivoice.cpp）
 CPP_BUILD_ARGS = _env("OMNIVOICE_CPP_BUILD_ARGS", "")  # 追加 cmake 参数，如 "-DGGML_CUDA=ON"
+# True = 透传 omnivoice-tts 的全部 stderr（ggml 内核编译 / MaskGIT 步进等，调试用）
+GGUF_DEBUG = _env_bool("OMNIVOICE_GGUF_DEBUG", False)
 
 # ── Web 界面 ──────────────────────────────────────────────
 WEB_IP = _env("OMNIVOICE_WEB_IP", "0.0.0.0")
@@ -62,12 +64,16 @@ WEB_AUTO_OPEN_BROWSER = _env_bool("OMNIVOICE_WEB_OPEN_BROWSER", False)
 
 
 # ── 后端模块选择（按 BACKEND 懒加载，供 cli.py / web.py 直接使用）──
-# 注意：本段必须放在所有变量定义之后（gguf.py 等会在 import 时读上面的常量）。
-def get_backend():
-    from src.backends import get_backend as _get_backend
-    return _get_backend(BACKEND)
+# 用函数委派而非 import 期绑定：避免 settings ↔ backends 的循环导入
+# （直接 import src.backends.gguf 时 settings 尚未初始化完）。
+def _backend_module():
+    from src.backends import get_backend
+    return get_backend(BACKEND)
 
 
-_backend = get_backend()
-generate = _backend.generate
-_load_model = _backend._load_model
+def generate(cfg, logger, **kwargs):
+    return _backend_module().generate(cfg, logger, **kwargs)
+
+
+def _load_model(cfg, logger):
+    return _backend_module()._load_model(cfg, logger)

@@ -43,6 +43,7 @@ from settings import (
     CPP_SRC,
     GGUF_BASE,
     GGUF_CODEC,
+    GGUF_DEBUG,
     GGUF_REPO,
 )
 
@@ -61,6 +62,32 @@ _TMP_DIR = os.path.join(_PROJECT_ROOT, ".tmp")
 
 def _bin_name() -> str:
     return "omnivoice-tts.exe" if sys.platform == "win32" else "omnivoice-tts"
+
+
+_STDERR_TAIL_LINES = 60  # 生成失败时随报错打印的 stderr 行数
+
+
+def _backend_init_failed(stderr: bytes) -> bool:
+    """stderr 是否表明 GGML 后端初始化失败（设备名无效/无可用后端）。
+
+    设备回退只针对这类启动期失败；输入错误（如非法 instruct）等其它
+    退出不应触发 CPU 重试，避免误导性警告与重复加载。
+    """
+    text = stderr.decode("utf-8", "replace")
+    return any(k in text for k in (
+        "backend_init failed",
+        "no backend available",
+        "not found. Available:",
+    ))
+
+
+def _stderr_tail(stderr: bytes) -> str:
+    """取 stderr 最后 N 行（失败诊断用），空则给提示。"""
+    text = stderr.decode("utf-8", "replace").strip()
+    if not text:
+        return "（无 stderr 输出）"
+    lines = text.splitlines()
+    return "\n".join(lines[-_STDERR_TAIL_LINES:])
 
 
 def _built_binary() -> str:
@@ -82,16 +109,24 @@ def _ensure_tmp_dir() -> None:
 
 # ── 模型权重（HF 下载）────────────────────────────────────
 
+# 进程内缓存：_load_model / generate 每次调用都会走到这里，缓存放过一次
+# 就不再重复下载定位与重复打印日志（多轮抽卡只打一次）
+_GGUF_CACHE: tuple[str, str] | None = None
+
 
 def _ensure_gguf(logger: logging.Logger) -> tuple[str, str]:
-    """定位/下载两个 GGUF 权重（HF 默认缓存；本地优先 + 镜像兜底）。"""
+    """定位/下载两个 GGUF 权重（HF 默认缓存；本地优先 + 镜像兜底，进程内缓存）。"""
+    global _GGUF_CACHE
+    if _GGUF_CACHE:
+        return _GGUF_CACHE
     logger.info("⏳ 定位 GGUF 权重（%s，本地优先）…", GGUF_REPO)
     t0 = time.time()
     base = _hf_download(GGUF_REPO, GGUF_BASE)
     codec = _hf_download(GGUF_REPO, GGUF_CODEC)
     logger.info("✓ GGUF 就绪: %.1fs\n  base : %s\n  codec: %s",
                 time.time() - t0, base, codec)
-    return base, codec
+    _GGUF_CACHE = (base, codec)
+    return _GGUF_CACHE
 
 
 # ── 推理二进制（clone + 编译）─────────────────────────────
@@ -120,13 +155,18 @@ def _build_cpp(logger: logging.Logger) -> None:
 
 
 def _ensure_binary(logger: logging.Logger) -> str:
-    """定位 omnivoice-tts 二进制；不存在则自动 clone + 编译到 vendor/。"""
+    """定位 omnivoice-tts 二进制（进程内缓存）；不存在则自动 clone + 编译到 vendor/。"""
+    global _BINARY_CACHE
+    if _BINARY_CACHE:
+        return _BINARY_CACHE
     if CPP_BIN and os.path.isfile(CPP_BIN):
         logger.info("✓ 使用 OMNIVOICE_CPP_BIN: %s", CPP_BIN)
-        return CPP_BIN
+        _BINARY_CACHE = CPP_BIN
+        return _BINARY_CACHE
     built = _built_binary()
     if os.path.isfile(built):
-        return built
+        _BINARY_CACHE = built
+        return _BINARY_CACHE
     logger.info("⏳ 未找到 omnivoice-tts 二进制，clone + 编译 omnivoice.cpp"
                 "（首次约 10-20 分钟，产物在项目内 vendor/，gitignore）…")
     if not os.path.isdir(_cpp_src_dir()):
@@ -135,7 +175,11 @@ def _ensure_binary(logger: logging.Logger) -> str:
     if not os.path.isfile(built):
         raise RuntimeError(f"omnivoice.cpp 编译失败：未生成 {built}")
     logger.info("✓ omnivoice-tts 就绪: %s", built)
-    return built
+    _BINARY_CACHE = built
+    return _BINARY_CACHE
+
+
+_BINARY_CACHE: str | None = None
 
 
 # ── 设备映射与参数映射 ────────────────────────────────────
@@ -189,12 +233,14 @@ class _ModelHandle:
 
 
 def _load_model(cfg: Config, logger: logging.Logger) -> _ModelHandle:
-    """准备 GGUF 后端：确保二进制已编译、权重已下载，返回句柄。"""
+    """准备 GGUF 后端：确保二进制已编译、权重已下载，返回句柄（进程内只打一次日志）。"""
+    first_call = _BINARY_CACHE is None or _GGUF_CACHE is None
     binary = _ensure_binary(logger)
     base, codec = _ensure_gguf(logger)
-    logger.info("✓ GGUF 后端就绪（%s，%d Hz，设备 %s）",
-                os.path.basename(base).replace("omnivoice-base-", "").replace(".gguf", ""),
-                _SAMPLING_RATE, cfg.device or "auto")
+    if first_call:
+        logger.info("✓ GGUF 后端就绪（%s，%d Hz，设备 %s）",
+                    os.path.basename(base).replace("omnivoice-base-", "").replace(".gguf", ""),
+                    _SAMPLING_RATE, cfg.device or "auto")
     return _ModelHandle(binary, base, codec)
 
 
@@ -246,16 +292,27 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs):
         logger.info("  ⏳ omnivoice-tts 生成中（%s）…", backend or "设备自动选择")
         t0 = time.time()
         payload = (text or "").encode("utf-8")
-        rc = subprocess.run(cmd, input=payload, env=env)
-        if rc.returncode != 0 and backend and backend != "CPU":
-            # 设备（Metal/CUDA）推理失败 → 警告并回退 CPU 重试一次
-            logger.warning("⚠️ %s 推理失败（退出码 %d），改用 CPU 重试 …",
+        # 捕获 stderr：默认静默（ggml 内核编译 / [MaskGIT-Step] 步进等噪音全部
+        # 吞掉，Python 侧打摘要即可）；GGUF_DEBUG=1 时全量透传调试。
+        # 失败时保留最后 N 行用于报错，避免"详见上方输出"却无迹可查。
+        rc = subprocess.run(cmd, input=payload, env=env,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE)
+        if (rc.returncode != 0 and backend and backend != "CPU"
+                and _backend_init_failed(rc.stderr)):
+            # 后端初始化失败（设备名无效/无可用后端）→ 警告并回退 CPU 重试一次
+            logger.warning("⚠️ %s 初始化失败（退出码 %d），改用 CPU 重试 …",
                            backend, rc.returncode)
             env["GGML_BACKEND"] = "CPU"
-            rc = subprocess.run(cmd, input=payload, env=env)
+            rc = subprocess.run(cmd, input=payload, env=env,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE)
         if rc.returncode != 0:
             raise RuntimeError(
-                f"omnivoice-tts 生成失败（退出码 {rc.returncode}），详见上方输出")
+                "omnivoice-tts 生成失败（退出码 %d）\n%s"
+                % (rc.returncode, _stderr_tail(rc.stderr)))
+        if GGUF_DEBUG and rc.stderr:
+            sys.stderr.write(rc.stderr.decode("utf-8", "replace"))
 
         if not os.path.isfile(out_wav) or os.path.getsize(out_wav) == 0:
             raise RuntimeError("omnivoice-tts 未产出 WAV 文件")
