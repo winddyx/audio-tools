@@ -49,6 +49,21 @@ import time
 from dataclasses import dataclass
 
 
+# ── 日志噪音控制 ──────────────────────────────────────────
+
+
+def _quiet_hf_logs() -> None:
+    """把 HuggingFace 相关第三方库的 INFO 日志压到 WARNING。
+
+    符合模型管理规则：HF 相关 INFO 日志（httpx/huggingface_hub/urllib3 等）
+    压到 WARNING，保留 WARNING 及以上提示（如缺 HF_TOKEN）与业务日志。
+    CLI / web 入口在 logging.basicConfig 之后调用本函数。
+    """
+    for name in ("httpx", "httpcore", "huggingface_hub", "urllib3",
+                 "filelock", "fsspec", "funasr"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 # ── 设备检测 ──────────────────────────────────────────────
 
 
@@ -76,6 +91,21 @@ def _is_mps_oom(e: Exception) -> bool:
     return (isinstance(e, RuntimeError)
             and "MPS" in str(e)
             and "out of memory" in str(e).lower())
+
+
+def _should_fallback_to_cpu(e: Exception, device: str) -> bool:
+    """设备（mps/xpu）加载/推理失败是否应自动回退 CPU。
+
+    - mps：仅限明确的内存不足（"MPS backend out of memory"）；其它错误属
+      代码/输入问题，回退 CPU 无意义，直接抛出。
+    - xpu：Intel GPU 运行时/驱动偶发不稳定，任意 RuntimeError 都回退 CPU
+      重试一次更稳（符合设备加速优先级规则：mps/xpu 推理失败则警告回退 cpu）。
+    """
+    if device == "mps":
+        return _is_mps_oom(e)
+    if device == "xpu":
+        return isinstance(e, RuntimeError)
+    return False
 
 
 def _apply_mps_memory_settings(device: str, logger: logging.Logger) -> None:
@@ -140,7 +170,7 @@ class Config:
     model_id: str = "k2-fsa/OmniVoice"  # HuggingFace 模型 ID
     model_path: str = ""      # 非空时优先于 model_id（本地 snapshot 目录）
     device: str = ""          # 留空则自动检测（CUDA > XPU > MPS > CPU）
-    dtype: str = ""           # 留空自动：CUDA 用 float16，XPU 用 bfloat16，MPS/CPU 用 float32
+    dtype: str = ""           # 留空自动：CUDA/XPU 用 bfloat16，MPS/CPU 用 float32
 
     # ── 生成模式 ──
     language: str = ""        # 语言代码/名称（如 en / zh / English）；留空 = 语言无关（模型自动判断）
@@ -285,17 +315,15 @@ _DTYPE_ALLOWED = {"float16", "float32", "float64", "bfloat16"}
 
 
 def _default_dtype(device: str) -> str:
-    """默认精度：CUDA 用 float16（快），XPU 用 bfloat16（Intel GPU 推荐），
+    """默认精度：CUDA/XPU 用 bfloat16（GPU 原生加速、指数范围大不易溢出），
     MPS/CPU 用 float32。
 
     torch 2.13 在 MPS 上加载 float16 权重会 SIGTRAP 崩溃（已实测复现），
-    MPS 上必须用 float32；CPU 同理。XPU 上 bfloat16 由 Arc 显卡原生加速、
-    精度比 float16 稳（指数范围大），是 Intel 官方推荐精度。可用 DTYPE
-    环境变量覆盖。
+    MPS 上必须用 float32；CPU 同理。CUDA/XPU 的 bfloat16 由 GPU 原生加速、
+    精度比 float16 稳（指数范围大）；老架构 GPU 若不支持 bf16 可用
+    DTYPE=float16 显式覆盖。可用 DTYPE 环境变量覆盖。
     """
-    if device == "cuda":
-        return "float16"
-    if device == "xpu":
+    if device in ("cuda", "xpu"):
         return "bfloat16"
     return "float32"
 
@@ -320,10 +348,10 @@ def _load_model(cfg: Config, logger: logging.Logger):
     resolved = resolve_path(cfg.model_id, cfg.model_path)
     logger.info("📦 模型目录: %s", resolved)
 
-    # 默认 dtype：CUDA 用 float16（快），XPU 用 bfloat16（Intel Arc GPU 推荐），
-    # MPS/CPU 用 float32——torch 2.13 在 MPS 上加载 float16 权重会 SIGTRAP
-    # 崩溃（已验证），且 HiggAudio tokenizer 不支持 MPS 会自动落 CPU，
-    # float32 更稳。可用 DTYPE 环境变量显式覆盖（如 float16/float32/bfloat16）。
+    # 默认 dtype：CUDA/XPU 用 bfloat16（GPU 原生加速），MPS/CPU 用 float32——
+    # torch 2.13 在 MPS 上加载 float16 权重会 SIGTRAP 崩溃（已验证），且
+    # HiggAudio tokenizer 不支持 MPS 会自动落 CPU，float32 更稳。可用 DTYPE
+    # 环境变量显式覆盖（如 float16/float32/bfloat16）。
     if cfg.dtype and cfg.dtype not in _DTYPE_ALLOWED:
         raise ValueError(
             f"无效 DTYPE: {cfg.dtype}（可选: {', '.join(sorted(_DTYPE_ALLOWED))}）")
@@ -338,11 +366,14 @@ def _load_model(cfg: Config, logger: logging.Logger):
             resolved, device_map=cfg.device, dtype=dtype,
         )
     except RuntimeError as e:
-        if not _is_mps_oom(e) or cfg.device != "mps":
+        if not _should_fallback_to_cpu(e, cfg.device):
             raise
-        # MPS 内存不足（其它进程占用高时连小分配都失败）：自动改用 CPU 重试
-        logger.warning("⚠️ MPS 内存不足（%s），自动改用 CPU 加载 …", e)
+        # MPS 内存不足（其它进程占用高时连小分配都失败）/ XPU 运行时失败：
+        # 自动改用 CPU 重试
+        failed_device = cfg.device.upper()
         cfg.device = "cpu"
+        logger.warning("⚠️ %s 加载失败（%s），自动改用 CPU 加载 …",
+                       failed_device, e)
         dtype = getattr(torch, cfg.dtype) if cfg.dtype else getattr(
             torch, _default_dtype("cpu")
         )
@@ -354,21 +385,24 @@ def _load_model(cfg: Config, logger: logging.Logger):
 
 
 def generate(cfg: Config, logger: logging.Logger, **kwargs):
-    """model.generate() 包装：MPS 内存不足时自动改用 CPU 重载模型并重试一次。
+    """model.generate() 包装：MPS/XPU 推理失败时自动改用 CPU 重载模型并重试一次。
 
-    生成阶段若触发 MPS OOM（长文本峰值内存），清除全局模型缓存、以 CPU 重新
-    加载（重载只发生一次，后续走缓存）后重试；CLI 与 web 共用本函数。
+    生成阶段若触发 MPS OOM（长文本峰值内存）或 XPU 运行时失败，清除全局
+    模型缓存、以 CPU 重新加载（重载只发生一次，后续走缓存）后重试；CLI 与
+    web 共用本函数。
     """
     model = _load_model(cfg, logger)
     try:
         return model.generate(**kwargs)
     except RuntimeError as e:
-        if not _is_mps_oom(e) or cfg.device != "mps":
+        if not _should_fallback_to_cpu(e, cfg.device):
             raise
         global _OMNIVOICE_MODEL
+        failed_device = cfg.device.upper()
         _OMNIVOICE_MODEL = None  # 强制按 CPU 重载
         cfg.device = "cpu"
-        logger.warning("⚠️ 生成时 MPS 内存不足（%s），自动改用 CPU 重试 …", e)
+        logger.warning("⚠️ 生成时 %s 推理失败（%s），自动改用 CPU 重试 …",
+                       failed_device, e)
         model = _load_model(cfg, logger)
         return model.generate(**kwargs)
 
@@ -494,13 +528,15 @@ def _asr_model(cfg: Config, logger: logging.Logger):
     try:
         _ASR_MODEL = AutoModel(**kwargs)
     except RuntimeError as e:
-        if not _is_mps_oom(e) or device != "mps":
+        if not _should_fallback_to_cpu(e, device):
             raise
-        # MPS 内存不足：SenseVoice 改用 CPU 重试（小模型，CPU 足够实时）
-        logger.warning("⚠️ MPS 内存不足（%s），SenseVoice 改用 CPU 加载 …", e)
+        # MPS 内存不足 / XPU 运行时失败：SenseVoice 改用 CPU 重试（小模型，CPU 足够实时）
+        failed_device = device.upper()
         device = "cpu"
         cfg.device = "cpu"
         kwargs["device"] = "cpu"
+        logger.warning("⚠️ %s 加载失败（%s），SenseVoice 改用 CPU 加载 …",
+                       failed_device, e)
         _ASR_MODEL = AutoModel(**kwargs)
     except Exception as e:
         # funasr 在模型缺失/下载失败时抛的异常信息不含 ASR 上下文，包一层明确报错

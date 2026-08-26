@@ -27,6 +27,7 @@ from omni import (
     get_best_device,
     _gen_kwargs,
     _load_model,
+    _quiet_hf_logs,
     _to_bool,
     _transcribe_ref,
 )
@@ -168,6 +169,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     """
     logger = logging.getLogger("omni")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    # HF 相关第三方库（httpx/huggingface_hub 等）的 INFO 日志压到 WARNING，
+    # 保留 WARNING 及以上提示（如缺 HF_TOKEN）与业务日志
+    _quiet_hf_logs()
 
     try:
         args = _parse_args(argv)

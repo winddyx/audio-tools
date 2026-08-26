@@ -38,6 +38,7 @@ from omni import (
     generate,
     get_best_device,
     _load_model,
+    _quiet_hf_logs,
     _transcribe_ref,
     _GEN_PARAM_ENVS,
 )
@@ -548,6 +549,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
     )
+    # HF 相关第三方库（httpx/huggingface_hub 等）的 INFO 日志压到 WARNING，
+    # 保留 WARNING 及以上提示（如缺 HF_TOKEN）与业务日志
+    _quiet_hf_logs()
 
     args = build_parser().parse_args(argv)
     _DEVICE = args.device or get_best_device()

@@ -72,7 +72,7 @@ uv run python web.py --share         # 创建公开链接
 | `DRAW_COUNT` | CLI 抽卡次数（默认 2） |
 | `DEVICE` / `--device` | `cuda` / `xpu` / `mps` / `cpu`（默认自动检测） |
 | `THREADS` | CPU 线程数（默认 `os.cpu_count()`，用满所有逻辑核心；可设小值如 `4` 留出核心给其他任务） |
-| `DTYPE` | 覆盖默认精度（CUDA fp16，XPU bfloat16，MPS/CPU fp32） |
+| `DTYPE` | 覆盖默认精度（CUDA/XPU bfloat16，MPS/CPU fp32） |
 | `MODEL_PATH` / `OMNIVOICE_MODEL_ID` | 本地模型目录 / 模型 ID |
 | `ASR_MODEL` | SenseVoice 模型 ID/本地目录（默认 `FunAudioLLM/SenseVoiceSmall`） |
 | `ASR_HUB` | SenseVoice 下载源：`hf`（默认，HuggingFace）/ `ms`（ModelScope） |
