@@ -233,6 +233,8 @@ def build_demo() -> gr.Blocks:
                     asr_cfg = Config(device=_DEVICE, ref_audio=ref_audio,
                                      language=lang or "")
                     ref_text = _transcribe_ref(asr_cfg, logger)
+                    # ASR 识别的参考文本同步打到终端（与 cli.py 一致，方便校对）
+                    logger.info("📝 参考文本: %s", ref_text)
                 audios = generate(
                     cfg, logger,
                     text=text.strip(),
