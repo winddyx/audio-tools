@@ -25,3 +25,7 @@ vendor/
 
 # Reasonix 工具目录
 .reasonix/
+
+# 用户参考目录（MOSS 项目副本，仅参考不进仓库）
+MOSS-Transcribe-Diarize-link-folder/
+**/MOSS-Transcribe-Diarize-link-folder/

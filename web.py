@@ -3,10 +3,9 @@
 OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 
 模型加载 / 路径解析 / ASR 转写 / 生成参数 全部复用 src/ 包（共享核心
-+ 推理后端，由 settings.BACKEND 选择；本文件只做 UI 封装）：
-- 模型加载: 后端 _load_model()（GGUF：编译 omnivoice.cpp + 下载 BF16 权重；
-  transformers：本地优先加载 k2-fsa/OmniVoice）
-- 参考文本转写: src.asr._transcribe_ref()（FunASR/SenseVoiceSmall，懒加载）
++ GGUF 推理后端；本文件只做 UI 封装）：
+- 模型加载: gguf 后端 _load_model()（编译 omnivoice.cpp + 下载 GGUF 权重）
+- 参考文本转写: src.asr._transcribe_ref()（SenseVoiceSmall-GGUF，llama.cpp runtime）
 - 生成参数: 参数名与 src.params._GEN_PARAM_ENVS 完全一致
 
 用法:
@@ -30,7 +29,7 @@ import gradio.processing_utils as _gradio_proc
 import numpy as np
 import soundfile as sf
 
-from omnivoice.utils.lang_map import LANG_NAME_TO_ID, lang_display_name
+from src.lang_map import LANG_NAME_TO_ID, lang_display_name
 
 # 共享核心与推理后端全部在 src/ 包
 from src import (
@@ -41,9 +40,10 @@ from src import (
     _GEN_PARAM_ENVS,
 )
 
-# 推理后端与全部可调设置统一在 settings.py（BACKEND / WEB_IP / WEB_PORT /
-# WEB_AUTO_OPEN_BROWSER 等；运行时可用 OMNIVOICE_BACKEND 等同名环境变量覆盖）
-from settings import BACKEND, WEB_AUTO_OPEN_BROWSER, WEB_IP, WEB_PORT, generate, _load_model
+# 推理后端只保留 GGUF（src/backends/gguf.py）；可调设置统一在 settings.py
+# （GGUF 权重 / C++ 二进制 / ASR / Web 选项等）
+from settings import WEB_AUTO_OPEN_BROWSER, WEB_IP, WEB_PORT
+from src.backends.gguf import generate, _load_model
 
 logger = logging.getLogger("omnivoice-web")
 
@@ -228,8 +228,8 @@ def build_demo() -> gr.Blocks:
                 if not ref_audio:
                     return None, "请上传参考音频。"
                 if not ref_text:
-                    # 复用 src.asr 的 SenseVoiceSmall 转写（懒加载；语言代码随
-                    # cfg 传入，由 asr._asr_language 映射为 SenseVoice 语言代码）
+                    # 复用 src.asr 的 SenseVoiceSmall-GGUF 转写（llama.cpp runtime；
+                    # 模型自动检测中/英，--language 仅作记录）
                     asr_cfg = Config(device=_DEVICE, ref_audio=ref_audio,
                                      language=lang or "")
                     ref_text = _transcribe_ref(asr_cfg, logger)
@@ -306,7 +306,7 @@ def build_demo() -> gr.Blocks:
                     rt = gr.Textbox(
                         label="参考文本 (可选) Reference Text",
                         lines=2,
-                        placeholder="留空则用 SenseVoiceSmall 自动转写参考音频",
+                        placeholder="留空则用 SenseVoiceSmall-GGUF 自动转写参考音频",
                     )
                 if include_instruct:
                     it = gr.Textbox(
@@ -526,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--asr-model",
         default=os.environ.get("ASR_MODEL", Config.asr_model),
-        help=f"SenseVoice 模型 ID/本地目录（默认: FunAudioLLM/SenseVoiceSmall）",
+        help=f"本地 SenseVoice GGUF 文件路径（默认经 HF 下载 sensevoice-small-q8.gguf）",
     )
     parser.add_argument(
         "--ip", default=WEB_IP, help=f"监听地址（默认 {WEB_IP}）",
@@ -565,7 +565,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     _cleanup_leftover_tmp()
 
     # 模型预热加载（复用后端 _load_model：GGUF 首次运行自动编译/下载，
-    # 权重本地优先；transformers 内部经 resolve_path 解析并打印模型目录）
+    # 权重本地优先；二进制/权重不存在时自动获取）
     cfg = Config(
         model_id=args.model_id,
         model_path=args.model_path,

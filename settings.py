@@ -3,10 +3,9 @@ OmniVoice 配音工具 — 全局设置（所有可调变量统一在这里）
 
 规则：
 - 直接改本文件里的变量即可生效；
-- 同名环境变量在运行时覆盖文件默认值（如 `OMNIVOICE_BACKEND=transformers`
-  临时切换后端，无需改文件）；
-- cli.py / web.py 与核心模块（src/backends/gguf.py 等）都从这里取值，
-  不再各自散落默认值；改后端 / 权重 / 端口等只需动这一处。
+- 同名环境变量在运行时覆盖文件默认值（如 `OMNIVOICE_GGUF_BASE=...`）；
+- cli.py / web.py 与核心模块（src/backends/gguf.py、src/asr.py 等）都从这里
+  取值，不再各自散落默认值；改权重 / 二进制 / 端口等只需动这一处。
 """
 
 from __future__ import annotations
@@ -38,10 +37,9 @@ def _env_int(name: str, default: int) -> int:
 
 
 # ── 推理后端 ──────────────────────────────────────────────
-# "gguf"（默认）：C++/GGML 推理（Serveurperso/OmniVoice-GGUF，输出 24 kHz；
-#   首次运行自动 clone+编译 omnivoice.cpp 到项目内 vendor/ 并下载权重到 HF 缓存）
-# "transformers"：原 k2-fsa/OmniVoice transformers 实现
-BACKEND = _env("OMNIVOICE_BACKEND", "gguf")
+# 只保留 GGUF 后端（C++/GGML 推理：Serveurperso/OmniVoice-GGUF，输出 24 kHz；
+# 首次运行自动 clone+编译 omnivoice.cpp 到项目内 vendor/ 并下载权重到 HF 缓存）。
+# cli.py / web.py 直接 from src.backends.gguf import generate, _load_model。
 
 # ── GGUF 后端：权重（HuggingFace 仓库 Serveurperso/OmniVoice-GGUF）──
 GGUF_REPO = _env("OMNIVOICE_GGUF_REPO", "Serveurperso/OmniVoice-GGUF")
@@ -56,24 +54,17 @@ CPP_BUILD_ARGS = _env("OMNIVOICE_CPP_BUILD_ARGS", "")  # 追加 cmake 参数，�
 # True = 透传 omnivoice-tts 的全部 stderr（ggml 内核编译 / MaskGIT 步进等，调试用）
 GGUF_DEBUG = _env_bool("OMNIVOICE_GGUF_DEBUG", False)
 
+# ── ASR（参考音频转写）：SenseVoiceSmall-GGUF（FunASR llama.cpp runtime）──
+# 权重经 HF 下载（本地优先 + 镜像兜底），二进制 llama-funasr-sensevoice
+# 留空时自动从 GitHub Releases 下载预编译包到项目内 vendor/funasr-llamacpp/。
+ASR_GGUF_REPO = _env("ASR_GGUF_REPO", "FunAudioLLM/SenseVoiceSmall-GGUF")
+ASR_GGUF_BASE = _env("ASR_GGUF_BASE", "sensevoice-small-q8.gguf")  # q8 / f16 / 原版
+ASR_VAD_REPO = _env("ASR_VAD_REPO", "FunAudioLLM/fsmn-vad-GGUF")
+ASR_VAD_BASE = _env("ASR_VAD_BASE", "fsmn-vad.gguf")
+FUNASR_LLAMACPP_BIN = _env("FUNASR_LLAMACPP_BIN", "")  # 已下载的二进制路径（留空自动获取）
+
 # ── Web 界面 ──────────────────────────────────────────────
 WEB_IP = _env("OMNIVOICE_WEB_IP", "0.0.0.0")
 WEB_PORT = _env_int("OMNI_PORT", 38001)
 # True = 启动后自动用默认浏览器打开界面
 WEB_AUTO_OPEN_BROWSER = _env_bool("OMNIVOICE_WEB_OPEN_BROWSER", False)
-
-
-# ── 后端模块选择（按 BACKEND 懒加载，供 cli.py / web.py 直接使用）──
-# 用函数委派而非 import 期绑定：避免 settings ↔ backends 的循环导入
-# （直接 import src.backends.gguf 时 settings 尚未初始化完）。
-def _backend_module():
-    from src.backends import get_backend
-    return get_backend(BACKEND)
-
-
-def generate(cfg, logger, **kwargs):
-    return _backend_module().generate(cfg, logger, **kwargs)
-
-
-def _load_model(cfg, logger):
-    return _backend_module()._load_model(cfg, logger)

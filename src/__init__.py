@@ -7,13 +7,12 @@ OmniVoice 配音工具 — 核心包（src/）
 - device：设备检测与容错（get_best_device / mps、xpu 回退 CPU）
 - hf：HuggingFace 下载与缓存管理（本地优先 + hf-mirror 兜底）
 - params：生成参数环境变量映射（_GEN_PARAM_ENVS / _gen_kwargs）
-- asr：参考音频转写（FunASR/SenseVoiceSmall）
+- asr：参考音频转写（SenseVoiceSmall-GGUF，FunASR llama.cpp runtime）
 
-推理后端（backends/，接口一致，由 settings.BACKEND 选择）：
-- backends.gguf：C++/GGML（omnivoice.cpp，Serveurperso/OmniVoice-GGUF BF16）
-- backends.transformers：k2-fsa/OmniVoice（transformers）
+推理后端（backends/，只保留 GGUF）：
+- backends.gguf：C++/GGML（omnivoice.cpp，Serveurperso/OmniVoice-GGUF）
 
-旧入口 omni.py 现为兼容 shim，聚合导出 transformers 后端与共享核心。
+旧入口 omni.py 现为兼容 shim，聚合导出共享核心与 GGUF 后端。
 """
 
 from .backends import BACKEND_IDS, get_backend

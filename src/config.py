@@ -24,7 +24,7 @@ class Config:
     # ── 生成模式 ──
     language: str = ""        # 语言代码/名称（如 en / zh / English）；留空 = 自动判断
     ref_audio: str = ""
-    ref_text: str = ""        # 参考音频转写文本；留空则用 FunASR/SenseVoiceSmall 转写
+    ref_text: str = ""        # 参考音频转写文本；留空则用 SenseVoiceSmall-GGUF 转写
     instruct: str = ""        # 声音设计指令（如 "female, low pitch, british accent"）
 
     # ── 长文本配音 ──
@@ -32,12 +32,12 @@ class Config:
     draw_count: int = 2       # 抽卡次数
     output_dir: str = ""      # 留空则输出到文本文件所在目录
 
-    # ── ASR 子命令（可选，FunASR/SenseVoiceSmall；仅用于校对/数据集/验证）──
+    # ── ASR 子命令（可选，SenseVoiceSmall-GGUF；用于校对/数据集/验证）──
     transcribe: bool = False  # --transcribe：转写 ref_audio 并打印文本
-    asr_model: str = ""       # SenseVoice 模型 ID/本地目录；留空默认 FunAudioLLM/SenseVoiceSmall
-    asr_hub: str = ""         # 模型下载源：hf（HuggingFace，默认）/ ms（ModelScope）
-    asr_vad: str = ""         # VAD 切分模型；留空默认 fsmn-vad，设 "0" 关闭
-    asr_lang_sym: str = ""    # ASR 语言代码（如 zh/en）；留空则跟随 --language，再留空自动检测
+    asr_model: str = ""       # 本地 SenseVoice GGUF 文件路径（默认经 HF 下载 q8，见 settings）
+    asr_hub: str = ""         # 保留字段（GGUF 经 huggingface_hub 下载，无 hub 切换）
+    asr_vad: str = ""         # 保留字段（VAD 由 fsmn-vad.gguf 承担，见 settings）
+    asr_lang_sym: str = ""    # 保留字段（SenseVoice 自动检测语言）
     asr_region_sym: str = ""  # 保留字段（SenseVoice 不支持地区强制，已废弃）
 
     # 生成参数不在此配置：全部交由后端自身默认值，如需覆盖用环境变量

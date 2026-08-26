@@ -2,8 +2,7 @@
 GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
 + Serveurperso/OmniVoice-GGUF BF16 权重。
 
-与 transformers 后端（src/backends/transformers.py）接口完全一致，由
-settings.BACKEND 选择（默认 "gguf"）：
+项目唯一推理后端（transformers 后端已移除），接口：
 
     _load_model(cfg, logger) → 句柄（.sampling_rate = 24000）
     generate(cfg, logger, text=…, language=…, ref_audio=…, ref_text=…,
@@ -22,7 +21,7 @@ settings.BACKEND 选择（默认 "gguf"）：
   可在 settings.py 用 GGUF_BASE / GGUF_CODEC 切回 Q8_0 等变体）。
 
 以上可调项统一在项目根 settings.py 中维护，同名环境变量可运行时覆盖。
-参考音频转写（ref_text）仍复用 src/asr.py 的 SenseVoiceSmall，与 TTS 模型无关。
+参考音频转写（ref_text）复用 src/asr.py 的 SenseVoiceSmall-GGUF，与 TTS 模型无关。
 """
 
 from __future__ import annotations
@@ -218,7 +217,7 @@ def _gen_kwargs_to_cli(kwargs: dict, logger: logging.Logger) -> list[str]:
     return cli
 
 
-# ── 对外接口（与 transformers 后端一致）──────────────────
+# ── 对外接口（cli.py / web.py 使用）────────────────────────
 
 
 class _ModelHandle:
@@ -245,7 +244,7 @@ def _load_model(cfg: Config, logger: logging.Logger) -> _ModelHandle:
 
 
 def generate(cfg: Config, logger: logging.Logger, **kwargs):
-    """调用 omnivoice-tts 生成音频，返回 [音频数组]（与 transformers 后端一致）。
+    """调用 omnivoice-tts 生成音频，返回 [音频数组]。
 
     kwargs 支持：text / language / ref_audio / ref_text / instruct，
     以及 src/params.py 中 GGUF 支持的生成参数子集（num_step / denoise /
@@ -260,7 +259,7 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs):
     if ref_audio and not ref_text:
         raise ValueError(
             "GGUF 后端语音克隆需要 ref_text（参考音频转写文本，"
-            "CLI/web 会自动用 SenseVoiceSmall 转写）")
+            "CLI/web 会自动用 SenseVoiceSmall-GGUF 转写）")
 
     handle = _load_model(cfg, logger)
     _ensure_tmp_dir()

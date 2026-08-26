@@ -18,5 +18,5 @@ def _quiet_hf_logs() -> None:
     压到 WARNING，保留 WARNING 及以上提示（如缺 HF_TOKEN）与业务日志。
     """
     for name in ("httpx", "httpcore", "huggingface_hub", "urllib3",
-                 "filelock", "fsspec", "funasr"):
+                 "filelock", "fsspec"):
         logging.getLogger(name).setLevel(logging.WARNING)

@@ -1,18 +1,17 @@
 [project]
 name = "omnivoice-tts-toolkit"
 version = "0.1.0"
-description = "OmniVoice 配音工具：600+ 语言零样本语音克隆 / 声音设计 / 自动音色"
+description = "OmniVoice 配音工具：600+ 语言零样本语音克隆 / 声音设计 / 自动音色（GGUF 后端 + SenseVoice GGUF ASR）"
 requires-python = ">=3.10"
 dependencies = [
-    "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@28bc0889d92110491d726a9c79f26a895db5a074",
     "soundfile",
     "huggingface_hub",
-    "funasr>=1.4.2",
-    # 显式声明为直接依赖 + pin 版本（no-sources-package 忽略 omnivoice 把
-    # torch 锁到 cu128 的 sources 后，xpu index 会选最新版 2.13.x；这里 pin
-    # 到已实测稳定的 2.11.0，与当前 .venv 一致，避免无谓重装）。
-    # marker 限定 linux/win：macOS 没有 xpu 构建，torch 由 omnivoice 传递
-    # 依赖从 PyPI 安装（2.11.0 在 PyPI 有 macosx wheel）。
+    # Web 界面（之前经 omnivoice 传递依赖，现显式声明）
+    "gradio==6.24.0",
+    # torch 用于设备探测与 xpu/mps 判定；TTS 推理在 C++（ggml）侧、
+    # ASR 在 llama.cpp runtime 侧，均不依赖 torch 计算。
+    # 显式声明为直接依赖 + pin 版本（避免 xpu index 选到未实测的 2.13.x；
+    # 与当前 .venv 一致，避免无谓重装）。
     "torch==2.11.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "torchaudio==2.11.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "torch==2.11.0; sys_platform == 'darwin'",

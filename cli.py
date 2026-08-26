@@ -30,15 +30,15 @@ from src import (
     _transcribe_ref,
 )
 
-# 推理后端与全部可调设置统一在 settings.py（BACKEND / GGUF 权重 / 二进制等；
-# 运行时可用 OMNIVOICE_BACKEND 等同名环境变量覆盖）
-from settings import BACKEND, generate, _load_model
+# 推理后端只保留 GGUF（src/backends/gguf.py：omnivoice.cpp + GGUF 权重）；
+# 可调设置统一在 settings.py（GGUF 权重 / C++ 二进制 / ASR / Web 选项等）
+from src.backends.gguf import generate, _load_model
 
 
 def _run_transcribe(cfg: Config, logger: logging.Logger) -> None:
-    """ASR 子命令：用 SenseVoiceSmall 转写参考音频并打印文本，然后退出。
+    """ASR 子命令：用 SenseVoiceSmall-GGUF（llama.cpp runtime）转写参考音频并打印文本。
 
-    不加载 OmniVoice TTS 模型，独立于主流程运行。
+    不加载 TTS 模型，独立于主流程运行。
     """
     print(_transcribe_ref(cfg, logger))
 
@@ -71,7 +71,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--ref-text", type=str, default=None,
-        help="参考音频转写文本（省略时默认用 FunASR/SenseVoiceSmall 转写参考音频）",
+        help="参考音频转写文本（省略时默认用 SenseVoiceSmall-GGUF 转写参考音频）",
     )
     parser.add_argument(
         "--instruct", type=str, default=None,
@@ -91,11 +91,11 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--transcribe", action="store_true",
-        help="ASR 子命令：用 FunASR/SenseVoiceSmall 转写参考音频并打印文本（不生成 TTS）",
+        help="ASR 子命令：用 SenseVoiceSmall-GGUF 转写参考音频并打印文本（不生成 TTS）",
     )
     parser.add_argument(
         "--asr-model", type=str, default=None,
-        help="SenseVoice 模型 ID 或本地目录（默认 FunAudioLLM/SenseVoiceSmall，可用 ASR_MODEL 覆盖）",
+        help="本地 SenseVoice GGUF 文件路径（默认经 HF 下载 sensevoice-small-q8.gguf）",
     )
     parser.add_argument(
         "--lang-sym", type=str, default=None,
@@ -103,7 +103,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--region-sym", type=str, default=None,
-        help="（已废弃，SenseVoice 不支持地区强制）仅保留兼容参数",
+        help="（保留字段，SenseVoice 自动检测语言）",
     )
     return parser.parse_args(argv)
 
@@ -167,7 +167,7 @@ def main(argv: Optional[list[str]] = None) -> None:
       uv run python cli.py <ref_audio> <text_file>
       uv run python cli.py <ref_audio> <text_file> --language en
       uv run python cli.py --text <text_file> --instruct "female, low pitch, british accent"
-      uv run python cli.py --transcribe <ref_audio>                 # ASR（FunASR/SenseVoiceSmall）
+      uv run python cli.py --transcribe <ref_audio>                 # ASR（SenseVoiceSmall-GGUF）
       uv run python cli.py --transcribe <ref_audio> --lang-sym en
       DRAW_COUNT=3 LANGUAGE=yue uv run python cli.py /path/to/ref.wav /path/to/text.txt
     """
@@ -189,8 +189,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         mode = ("语音克隆" if cfg.ref_audio
                 else "声音设计" if cfg.instruct
                 else "自动音色")
-        logger.info("🌐 模式: %s  语言: %s  设备: %s  后端: %s",
-                    mode, cfg.language or "自动", cfg.device, BACKEND)
+        logger.info("🌐 模式: %s  语言: %s  设备: %s  后端: gguf",
+                    mode, cfg.language or "自动", cfg.device)
 
         _validate_inputs(cfg, logger)
 
@@ -201,11 +201,11 @@ def main(argv: Optional[list[str]] = None) -> None:
             sys.exit(1)
 
         # 参考音频直接交给模型处理（模型内部自行加载/重采样/转单声道，
-        # 无需 ffmpeg 预转换）；ref_text 省略时默认用 SenseVoiceSmall 转写参考音频
+        # 无需 ffmpeg 预转换）；ref_text 省略时默认用 SenseVoiceSmall-GGUF 转写参考音频
         # （不依赖 OmniVoice 内部 Whisper ASR）
         ref_text = cfg.ref_text
         if cfg.ref_audio and not ref_text:
-            logger.info("ℹ️ ref_text 未提供，用 SenseVoiceSmall 转写参考音频 …")
+            logger.info("ℹ️ ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
             ref_text = _transcribe_ref(cfg, logger)
             logger.info("📝 参考文本: %s", ref_text)
             if not ref_text:
@@ -222,7 +222,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         gen_kwargs = _gen_kwargs()
 
         import soundfile as sf  # 与上游 CLI 一致，用 soundfile 保存 WAV
-        from tqdm import tqdm  # 进度条（transformers 已带该依赖）
+        from tqdm import tqdm  # 进度条
 
         for draw in range(1, cfg.draw_count + 1):
             # 文件名：<文本名>.<unix 秒时间戳>.wav（不含抽卡序号）。
@@ -257,7 +257,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                     text=text,
                     language=cfg.language or None,
                     ref_audio=cfg.ref_audio or None,
-                    # 克隆模式下 ref_text 已由用户提供或 SenseVoiceSmall 转写（保证非空非 None，
+                    # 克隆模式下 ref_text 已由用户提供或 SenseVoiceSmall-GGUF 转写（保证非空非 None，
                     # 模型内部不会走 Whisper 兜底）；声音设计/自动音色模式传 None
                     ref_text=ref_text if cfg.ref_audio else None,
                     instruct=cfg.instruct or None,
