@@ -8,7 +8,7 @@
       登录/开机后自动启动 web.py（uv run），崩溃自动重启。
 
       部署（user-level，仅当前用户）：
-        cp web.plist ~/Library/LaunchAgents/com.omnivoice.web.plist
+        cp omni-web.plist ~/Library/LaunchAgents/com.omnivoice.web.plist
         launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.omnivoice.web.plist
 
       卸载 / 停止：
