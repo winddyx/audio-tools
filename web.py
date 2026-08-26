@@ -48,7 +48,14 @@ from src.backends.gguf import generate, _load_model
 logger = logging.getLogger("omnivoice-web")
 
 # ── 主题与样式（gradio 6: launch() 时传入）────────────────
-_THEME = gr.themes.Soft(font=["Inter", "Arial", "sans-serif"])
+# 主题：YTheme/TehnoX（HF Space，首次自动下载缓存）；
+# 字体：统一用系统/浏览器默认等宽栈（不随主题的 Roboto 走）
+_THEME = gr.themes.Soft.from_hub("YTheme/TehnoX")
+_THEME.font = [
+    "ui-monospace", "SFMono-Regular", "Menlo", "Consolas",
+    "Liberation Mono", "monospace",
+]
+_THEME.font_mono = _THEME.font
 _CSS = """
 .gradio-container {max-width: 100% !important; font-size: 16px !important;}
 .gradio-container h1 {font-size: 1.5em !important;}
