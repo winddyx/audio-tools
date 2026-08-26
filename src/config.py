@@ -1,8 +1,8 @@
 """
 OmniVoice 配音工具 — 核心配置（Config 数据类 + 通用解析助手）
 
-Config 为 CLI / web / 各推理后端共用的运行配置，字段与旧 omni.py 完全一致，
-保持业务文件（cli.py / web.py）的 _BACKEND 切换零改动成本。
+Config 为 CLI / web / 各推理后端共用的运行配置，字段与旧 omni.py 完全一致；
+可调设置统一在项目根 settings.py（BACKEND / GGUF 权重 / Web 选项等）。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ class Config:
     model_id: str = "k2-fsa/OmniVoice"  # transformers 后端模型 ID（GGUF 后端忽略）
     model_path: str = ""      # 非空时优先于 model_id（本地 snapshot 目录）
     device: str = ""          # 留空则自动检测（CUDA > XPU > MPS > CPU）
-    dtype: str = ""           # 仅 transformers 后端生效；GGUF 量化固定 Q8_0
+    dtype: str = ""           # 仅 transformers 后端生效；GGUF 量化随文件而定（默认 BF16）
 
     # ── 生成模式 ──
     language: str = ""        # 语言代码/名称（如 en / zh / English）；留空 = 自动判断

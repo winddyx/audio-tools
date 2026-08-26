@@ -9,7 +9,7 @@ PreTrainedModel，自带 config.json / tokenizer / audio_tokenizer），在进�
     generate(cfg, logger, text=…, language=…, ref_audio=…, ref_text=…,
              instruct=…, **gen_kwargs) → [音频数组]
 
-由 cli.py / web.py 顶部的 _BACKEND 变量切换（默认 "gguf"，本后端保留为
+由 settings.BACKEND 选择（默认 "gguf"，本后端保留为
 "transformers" 分支）。模型管理规则见 src/hf.py。
 """
 

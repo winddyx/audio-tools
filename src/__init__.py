@@ -9,8 +9,8 @@ OmniVoice 配音工具 — 核心包（src/）
 - params：生成参数环境变量映射（_GEN_PARAM_ENVS / _gen_kwargs）
 - asr：参考音频转写（FunASR/SenseVoiceSmall）
 
-推理后端（backends/，接口一致，业务文件用 _BACKEND 变量切换）：
-- backends.gguf：C++/GGML（omnivoice.cpp，Serveurperso/OmniVoice-GGUF Q8_0）
+推理后端（backends/，接口一致，由 settings.BACKEND 选择）：
+- backends.gguf：C++/GGML（omnivoice.cpp，Serveurperso/OmniVoice-GGUF BF16）
 - backends.transformers：k2-fsa/OmniVoice（transformers）
 
 旧入口 omni.py 现为兼容 shim，聚合导出 transformers 后端与共享核心。

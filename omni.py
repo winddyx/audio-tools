@@ -5,8 +5,8 @@ OmniVoice 配音工具 — 兼容层（transformers 后端聚合导出）
 backends）。本文件保留仅为兼容历史 `from omni import ...` 的调用方，
 等价于旧单文件 omni.py（transformers 后端）。
 
-新代码请从 src 导入；后端切换见 cli.py / web.py 顶部的 _BACKEND 变量：
-- "gguf"（默认）：C++/GGML 推理（Serveurperso/OmniVoice-GGUF Q8_0）
+新代码请从 src 导入；后端切换统一在 settings.py（BACKEND 变量 / OMNIVOICE_BACKEND 环境变量）：
+- "gguf"（默认）：C++/GGML 推理（Serveurperso/OmniVoice-GGUF BF16）
 - "transformers"：本文件背后的 k2-fsa/OmniVoice 实现
 """
 

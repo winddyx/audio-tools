@@ -3,8 +3,8 @@
 OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 
 模型加载 / 路径解析 / ASR 转写 / 生成参数 全部复用 src/ 包（共享核心
-+ 推理后端，业务文件用 _BACKEND 变量切换；本文件只做 UI 封装）：
-- 模型加载: 后端 _load_model()（GGUF：编译 omnivoice.cpp + 下载 Q8_0 权重；
++ 推理后端，由 settings.BACKEND 选择；本文件只做 UI 封装）：
+- 模型加载: 后端 _load_model()（GGUF：编译 omnivoice.cpp + 下载 BF16 权重；
   transformers：本地优先加载 k2-fsa/OmniVoice）
 - 参考文本转写: src.asr._transcribe_ref()（FunASR/SenseVoiceSmall，懒加载）
 - 生成参数: 参数名与 src.params._GEN_PARAM_ENVS 完全一致
@@ -41,17 +41,9 @@ from src import (
     _GEN_PARAM_ENVS,
 )
 
-# ── 推理后端（与 cli.py 一致）────────────────────────────
-# "gguf"（默认）：C++/GGML 推理（Serveurperso/OmniVoice-GGUF Q8_0）
-# "transformers"：原 k2-fsa/OmniVoice transformers 实现
-_BACKEND = "gguf"
-
-if _BACKEND == "gguf":
-    from src.backends.gguf import _load_model, generate
-elif _BACKEND == "transformers":
-    from src.backends.transformers import _load_model, generate
-else:
-    raise ValueError(f"未知推理后端: {_BACKEND}（可选: gguf / transformers）")
+# 推理后端与全部可调设置统一在 settings.py（BACKEND / WEB_IP / WEB_PORT /
+# WEB_AUTO_OPEN_BROWSER 等；运行时可用 OMNIVOICE_BACKEND 等同名环境变量覆盖）
+from settings import BACKEND, WEB_AUTO_OPEN_BROWSER, WEB_IP, WEB_PORT, generate, _load_model
 
 logger = logging.getLogger("omnivoice-web")
 
@@ -110,7 +102,8 @@ def _patch_gradio_audio_probe() -> None:
 _patch_gradio_audio_probe()
 
 # ── 启动行为配置（直接改这里的值，无需任何命令行参数/环境变量）──
-AUTO_OPEN_BROWSER = False  # True = 启动后自动用默认浏览器打开界面
+# 是否自动打开浏览器由 settings.py 的 WEB_AUTO_OPEN_BROWSER 控制
+# （env: OMNIVOICE_WEB_OPEN_BROWSER=1）
 
 
 # ── 语言列表（显示名 → 代码）──────────────────────────────
@@ -534,12 +527,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"SenseVoice 模型 ID/本地目录（默认: FunAudioLLM/SenseVoiceSmall）",
     )
     parser.add_argument(
-        "--ip", default="0.0.0.0", help="监听地址（默认 0.0.0.0）",
+        "--ip", default=WEB_IP, help=f"监听地址（默认 {WEB_IP}）",
     )
     parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("OMNI_PORT", "38001")),
-        help="监听端口（默认 38001）",
+        "--port", type=int, default=WEB_PORT,
+        help=f"监听端口（默认 {WEB_PORT}）",
     )
     parser.add_argument(
         "--root-path", default=None, help="反向代理根路径",
@@ -590,8 +582,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         root_path=args.root_path,
         theme=_THEME,
         css=_CSS,
-        # 是否自动打开浏览器由 web.py 顶部的 AUTO_OPEN_BROWSER 变量控制
-        inbrowser=AUTO_OPEN_BROWSER,
+        # 是否自动打开浏览器由 settings.WEB_AUTO_OPEN_BROWSER 控制
+        inbrowser=WEB_AUTO_OPEN_BROWSER,
     )
     return 0
 

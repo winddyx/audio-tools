@@ -8,7 +8,7 @@ OmniVoice 配音工具 — CLI 入口（文本文件 → WAV）
   uv run python cli.py --transcribe <ref_audio.wav>            # ASR 转写（校对/数据集用）
 
 模型逻辑全部在 src/ 包（共享核心 + 推理后端），本文件只做参数解析、转写/生成
-流程编排与文件输出；后端默认 GGUF（Q8_0，见下方 _BACKEND），Web 界面见 web.py。
+流程编排与文件输出；后端默认 GGUF（BF16，设置见 settings.py），Web 界面见 web.py。
 """
 
 from __future__ import annotations
@@ -30,20 +30,9 @@ from src import (
     _transcribe_ref,
 )
 
-# ── 推理后端 ──────────────────────────────────────────────
-# "gguf"（默认）：C++/GGML 推理（Serveurperso/OmniVoice-GGUF Q8_0 量化，
-#   omnivoice.cpp；首次运行自动 clone+编译到项目内 vendor/ 并下载权重到
-#   HF 缓存；输出 24 kHz）。
-# "transformers"：原 k2-fsa/OmniVoice transformers 实现。
-# 两套后端接口一致（generate / _load_model），共享核心在 src/。
-_BACKEND = "gguf"
-
-if _BACKEND == "gguf":
-    from src.backends.gguf import _load_model, generate
-elif _BACKEND == "transformers":
-    from src.backends.transformers import _load_model, generate
-else:
-    raise ValueError(f"未知推理后端: {_BACKEND}（可选: gguf / transformers）")
+# 推理后端与全部可调设置统一在 settings.py（BACKEND / GGUF 权重 / 二进制等；
+# 运行时可用 OMNIVOICE_BACKEND 等同名环境变量覆盖）
+from settings import BACKEND, generate, _load_model
 
 
 def _run_transcribe(cfg: Config, logger: logging.Logger) -> None:
@@ -200,8 +189,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         mode = ("语音克隆" if cfg.ref_audio
                 else "声音设计" if cfg.instruct
                 else "自动音色")
-        logger.info("🌐 模式: %s  语言: %s  设备: %s",
-                    mode, cfg.language or "自动", cfg.device)
+        logger.info("🌐 模式: %s  语言: %s  设备: %s  后端: %s",
+                    mode, cfg.language or "自动", cfg.device, BACKEND)
 
         _validate_inputs(cfg, logger)
 

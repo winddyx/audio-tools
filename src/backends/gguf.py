@@ -1,26 +1,27 @@
 """
 GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
-+ Serveurperso/OmniVoice-GGUF Q8_0 量化权重。
++ Serveurperso/OmniVoice-GGUF BF16 权重。
 
-与 transformers 后端（src/backends/transformers.py）接口完全一致，供
-cli.py / web.py 的 _BACKEND 变量切换（默认 "gguf"）：
+与 transformers 后端（src/backends/transformers.py）接口完全一致，由
+settings.BACKEND 选择（默认 "gguf"）：
 
     _load_model(cfg, logger) → 句柄（.sampling_rate = 24000）
     generate(cfg, logger, text=…, language=…, ref_audio=…, ref_text=…,
              instruct=…, **gen_kwargs) → [音频数组]
 
 模型管理（遵循项目规则）：
-- 两个 GGUF（omnivoice-base-Q8_0.gguf + omnivoice-tokenizer-Q8_0.gguf）统一经
+- 两个 GGUF（omnivoice-base-BF16.gguf + omnivoice-tokenizer-BF16.gguf）统一经
   huggingface_hub 下载，落 HF 默认缓存；本地优先 + hf-mirror 兜底（src/hf.py）。
-- 推理二进制 omnivoice-tts：OMNIVOICE_CPP_BIN 显式指定；否则自动 clone +
-  编译 omnivoice.cpp 到项目内 vendor/omnivoice.cpp/（gitignore，首次约
-  10-20 分钟）；OMNIVOICE_CPP_SRC 可指向已有源码目录、
-  OMNIVOICE_CPP_BUILD_ARGS 可追加 cmake 参数。
-- 设备映射（GGML_BACKEND）：mps→Metal，cuda→CUDA0，cpu→CPU；xpu/留空
-  交给运行时自动选择（SYCL 未在官方 backend 表）。设备推理失败自动回退
-  CPU 重试一次（符合设备加速优先级规则）。
-- 输出 24 kHz mono WAV（Q8_0 量化固定，DTYPE 不适用）。
+- 推理二进制 omnivoice-tts：settings.CPP_BIN 显式指定；否则自动 clone + 编译
+  omnivoice.cpp 到项目内 vendor/omnivoice.cpp/（gitignore，首次约 10-20 分钟）；
+  settings.CPP_SRC 可指向已有源码目录、settings.CPP_BUILD_ARGS 可追加 cmake 参数。
+- 设备映射（GGML_BACKEND）：mps→MTL0，cuda→CUDA0，cpu→CPU；xpu/留空
+  交给运行时自动选择（SYCL 未在官方 backend 表；注意 ggml 的 Metal 设备名是
+  MTL0 而非 "Metal"）。设备推理失败自动回退 CPU 重试一次（符合设备加速优先级规则）。
+- 输出 24 kHz mono WAV（GGUF 量化随文件而定，DTYPE 不适用；默认 BF16，
+  可在 settings.py 用 GGUF_BASE / GGUF_CODEC 切回 Q8_0 等变体）。
 
+以上可调项统一在项目根 settings.py 中维护，同名环境变量可运行时覆盖。
 参考音频转写（ref_text）仍复用 src/asr.py 的 SenseVoiceSmall，与 TTS 模型无关。
 """
 
@@ -36,12 +37,16 @@ import time
 
 from ..config import Config
 from ..hf import _hf_download
+from settings import (
+    CPP_BIN,
+    CPP_BUILD_ARGS,
+    CPP_SRC,
+    GGUF_BASE,
+    GGUF_CODEC,
+    GGUF_REPO,
+)
 
-# ── 可配置项（环境变量覆盖）──────────────────────────────
-
-_GGUF_REPO = os.environ.get("OMNIVOICE_GGUF_REPO") or "Serveurperso/OmniVoice-GGUF"
-_GGUF_BASE = os.environ.get("OMNIVOICE_GGUF_BASE") or "omnivoice-base-Q8_0.gguf"
-_GGUF_CODEC = os.environ.get("OMNIVOICE_GGUF_CODEC") or "omnivoice-tokenizer-Q8_0.gguf"
+# 上游仓库固定地址（非可调设置，仅在自动 clone 时使用）
 _CPP_REPO = "https://github.com/ServeurpersoCom/omnivoice.cpp.git"
 
 _SAMPLING_RATE = 24000  # omnivoice.cpp 输出固定 24 kHz mono
@@ -50,8 +55,7 @@ _SAMPLING_RATE = 24000  # omnivoice.cpp 输出固定 24 kHz mono
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 _VENDOR_DIR = os.path.join(_PROJECT_ROOT, "vendor")
-_CPP_SRC = (os.environ.get("OMNIVOICE_CPP_SRC")
-            or os.path.join(_VENDOR_DIR, "omnivoice.cpp"))
+_CPP_SRC_DEFAULT = os.path.join(_VENDOR_DIR, "omnivoice.cpp")
 _TMP_DIR = os.path.join(_PROJECT_ROOT, ".tmp")
 
 
@@ -60,7 +64,11 @@ def _bin_name() -> str:
 
 
 def _built_binary() -> str:
-    return os.path.join(_CPP_SRC, "build", _bin_name())
+    return os.path.join(_cpp_src_dir(), "build", _bin_name())
+
+
+def _cpp_src_dir() -> str:
+    return CPP_SRC or _CPP_SRC_DEFAULT
 
 
 def _run(cmd: list[str]) -> None:
@@ -76,11 +84,11 @@ def _ensure_tmp_dir() -> None:
 
 
 def _ensure_gguf(logger: logging.Logger) -> tuple[str, str]:
-    """定位/下载两个 Q8_0 GGUF（HF 默认缓存；本地优先 + 镜像兜底）。"""
-    logger.info("⏳ 定位 GGUF 权重（%s，Q8_0，本地优先）…", _GGUF_REPO)
+    """定位/下载两个 GGUF 权重（HF 默认缓存；本地优先 + 镜像兜底）。"""
+    logger.info("⏳ 定位 GGUF 权重（%s，本地优先）…", GGUF_REPO)
     t0 = time.time()
-    base = _hf_download(_GGUF_REPO, _GGUF_BASE)
-    codec = _hf_download(_GGUF_REPO, _GGUF_CODEC)
+    base = _hf_download(GGUF_REPO, GGUF_BASE)
+    codec = _hf_download(GGUF_REPO, GGUF_CODEC)
     logger.info("✓ GGUF 就绪: %.1fs\n  base : %s\n  codec: %s",
                 time.time() - t0, base, codec)
     return base, codec
@@ -92,7 +100,7 @@ def _ensure_gguf(logger: logging.Logger) -> tuple[str, str]:
 def _clone_cpp(logger: logging.Logger) -> None:
     os.makedirs(_VENDOR_DIR, exist_ok=True)
     cmd = ["git", "clone", "--depth", "1", "--recurse-submodules",
-           "--shallow-submodules", _CPP_REPO, _CPP_SRC]
+           "--shallow-submodules", _CPP_REPO, _cpp_src_dir()]
     logger.info("  git clone %s …", _CPP_REPO)
     _run(cmd)
 
@@ -101,28 +109,27 @@ def _build_cpp(logger: logging.Logger) -> None:
     args = ["-DCMAKE_BUILD_TYPE=Release"]
     if sys.platform == "darwin":
         args.append("-DGGML_METAL=ON")
-    extra = os.environ.get("OMNIVOICE_CPP_BUILD_ARGS")
-    if extra:
-        args.extend(shlex.split(extra))
-    build_dir = os.path.join(_CPP_SRC, "build")
+    if CPP_BUILD_ARGS:
+        args.extend(shlex.split(CPP_BUILD_ARGS))
+    src_dir = _cpp_src_dir()
+    build_dir = os.path.join(src_dir, "build")
     logger.info("  cmake 配置（%s）…", " ".join(args))
-    _run(["cmake", "-B", build_dir, "-S", _CPP_SRC, *args])
+    _run(["cmake", "-B", build_dir, "-S", src_dir, *args])
     logger.info("  cmake 编译（多核，请耐心等待）…")
     _run(["cmake", "--build", build_dir, "-j"])
 
 
 def _ensure_binary(logger: logging.Logger) -> str:
     """定位 omnivoice-tts 二进制；不存在则自动 clone + 编译到 vendor/。"""
-    explicit = os.environ.get("OMNIVOICE_CPP_BIN")
-    if explicit and os.path.isfile(explicit):
-        logger.info("✓ 使用 OMNIVOICE_CPP_BIN: %s", explicit)
-        return explicit
+    if CPP_BIN and os.path.isfile(CPP_BIN):
+        logger.info("✓ 使用 OMNIVOICE_CPP_BIN: %s", CPP_BIN)
+        return CPP_BIN
     built = _built_binary()
     if os.path.isfile(built):
         return built
     logger.info("⏳ 未找到 omnivoice-tts 二进制，clone + 编译 omnivoice.cpp"
                 "（首次约 10-20 分钟，产物在项目内 vendor/，gitignore）…")
-    if not os.path.isdir(_CPP_SRC):
+    if not os.path.isdir(_cpp_src_dir()):
         _clone_cpp(logger)
     _build_cpp(logger)
     if not os.path.isfile(built):
@@ -135,12 +142,14 @@ def _ensure_binary(logger: logging.Logger) -> str:
 
 
 def _ggml_backend(device: str) -> str | None:
-    """设备 → GGML_BACKEND 环境变量。
+    """设备 → GGML_BACKEND 环境变量（ggml 索引式设备名）。
 
-    mps→Metal，cuda→CUDA0，cpu→CPU；xpu/未知不设置（GGML 运行时自动选择，
-    SYCL 未出现在 omnivoice.cpp 官方 backend 表）。
+    实测本仓库 pin 的 ggml 0.17.0 中 Metal 设备注册名为 MTL0（并非 "Metal"），
+    cuda→CUDA0，mps→MTL0，cpu→CPU；xpu/未知不设置（GGML 运行时自动选择，
+    SYCL 未出现在官方 backend 表）。设备名不存在时二进制会硬失败，随后由
+    generate() 的 CPU 回退重试兜底。
     """
-    return {"cuda": "CUDA0", "mps": "Metal", "cpu": "CPU"}.get(device or "")
+    return {"cuda": "CUDA0", "mps": "MTL0", "cpu": "CPU"}.get(device or "")
 
 
 def _gen_kwargs_to_cli(kwargs: dict, logger: logging.Logger) -> list[str]:
@@ -180,10 +189,11 @@ class _ModelHandle:
 
 
 def _load_model(cfg: Config, logger: logging.Logger) -> _ModelHandle:
-    """准备 GGUF 后端：确保二进制已编译、Q8_0 权重已下载，返回句柄。"""
+    """准备 GGUF 后端：确保二进制已编译、权重已下载，返回句柄。"""
     binary = _ensure_binary(logger)
     base, codec = _ensure_gguf(logger)
-    logger.info("✓ GGUF 后端就绪（Q8_0，%d Hz，设备 %s）",
+    logger.info("✓ GGUF 后端就绪（%s，%d Hz，设备 %s）",
+                os.path.basename(base).replace("omnivoice-base-", "").replace(".gguf", ""),
                 _SAMPLING_RATE, cfg.device or "auto")
     return _ModelHandle(binary, base, codec)
 
