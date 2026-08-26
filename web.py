@@ -213,8 +213,14 @@ def build_demo() -> gr.Blocks:
         ui: Dict[str, Any],
         mode: str,  # "clone" | "design"
     ):
+        """生成核心。返回 (输出 wav 路径, 状态消息, ASR 参考文本)。
+
+        ASR 参考文本：clone 模式且本次由 ASR 转写时返回转写结果，否则返回 ""，
+        供 UI 在状态上方展示（cli 侧已打印到终端）。
+        """
+        asr_text = ""
         if not text or not text.strip():
-            return None, "请输入待合成文本。"
+            return None, "请输入待合成文本。", asr_text
 
         # 复用后端：Config + _load_model（GGUF 首次运行自动编译/下载）
         cfg = Config(device=_DEVICE)
@@ -226,13 +232,14 @@ def build_demo() -> gr.Blocks:
         try:
             if mode == "clone":
                 if not ref_audio:
-                    return None, "请上传参考音频。"
+                    return None, "请上传参考音频。", asr_text
                 if not ref_text:
                     # 复用 src.asr 的 SenseVoiceSmall-GGUF 转写（llama.cpp runtime；
                     # 模型自动检测中/英，--language 仅作记录）
                     asr_cfg = Config(device=_DEVICE, ref_audio=ref_audio,
                                      language=lang or "")
                     ref_text = _transcribe_ref(asr_cfg, logger)
+                    asr_text = ref_text
                     # ASR 识别的参考文本同步打到终端（与 cli.py 一致，方便校对）
                     logger.info("📝 参考文本: %s", ref_text)
                 audios = generate(
@@ -254,7 +261,7 @@ def build_demo() -> gr.Blocks:
                 )
         except Exception as e:
             logger.exception("生成失败")
-            return None, f"错误: {type(e).__name__}: {e}"
+            return None, f"错误: {type(e).__name__}: {e}", asr_text
 
         # 转 numpy + 裁剪到 [-1, 1]：上游 generate() 可能返回 torch.Tensor
         # （无 .astype），且超界采样点直接 cast 会 int16 回绕产生爆音
@@ -273,7 +280,7 @@ def build_demo() -> gr.Blocks:
         # （unix 时间戳）作为下载文件名；gradio 对路径的 ffprobe 可播放性探测
         # 已由 _patch_gradio_audio_probe() 兜底（ffprobe 缺失时视为可播放），
         # Windows 常见"有 ffmpeg 无 ffprobe"不再抛 FFExecutableNotFoundError。
-        return out_path, "生成完成 ✓"
+        return out_path, "生成完成 ✓", asr_text
 
     # ── 主题与样式（gradio 6: 传参到 launch()，不传 Blocks 构造器）────
 
@@ -382,6 +389,12 @@ def build_demo() -> gr.Blocks:
                         )
                         clone_btn = gr.Button("生成 Generate", variant="primary")
                     with gr.Column(scale=1):
+                        clone_asr_text = gr.Textbox(
+                            label="ASR 参考文本 Reference Text (ASR)",
+                            lines=3,
+                            interactive=False,
+                            placeholder="未填参考文本时，SenseVoice GGUF 转写出的参考音频文本会显示在这里…",
+                        )
                         clone_status = gr.Textbox(label="状态 Status", lines=2)
                         clone_outputs = [
                             gr.Audio(
@@ -404,8 +417,9 @@ def build_demo() -> gr.Blocks:
                     ):
                         draw_count = max(1, min(int(draw_count or 2), _MAX_DRAWS))
                         results: list = []
+                        asr_text = ""
                         for i in range(draw_count):
-                            out, msg = _gen_core(
+                            out, msg, asr_text = _gen_core(
                                 text=text, language=lang,
                                 ref_audio=ref_aud, ref_text=ref_txt or None,
                                 instruct=instruct,
@@ -417,8 +431,9 @@ def build_demo() -> gr.Blocks:
                                 mode="clone",
                             )
                             if out is None:
-                                # 出错：不破坏已有结果，只更新状态
-                                return (*([gr.update()] * _MAX_DRAWS), msg)
+                                # 出错：不破坏已有结果，只更新状态与 ASR 文本
+                                return (*([gr.update()] * _MAX_DRAWS),
+                                        gr.update(value=asr_text), msg)
                             results.append(out)
                         # 前 draw_count 个槽位显示本次结果，其余隐藏
                         slots = [
@@ -427,7 +442,8 @@ def build_demo() -> gr.Blocks:
                             else gr.update(visible=False)
                             for i in range(_MAX_DRAWS)
                         ]
-                        return (*slots, f"生成完成 ✓ 共 {draw_count} 个结果")
+                        return (*slots, gr.update(value=asr_text),
+                                f"生成完成 ✓ 共 {draw_count} 个结果")
 
                     clone_btn.click(
                         _clone_fn,
@@ -437,7 +453,7 @@ def build_demo() -> gr.Blocks:
                             clone_ns, clone_gs, clone_ts, clone_dn,
                             clone_po, clone_nm, clone_sp, clone_du,
                         ],
-                        outputs=[*clone_outputs, clone_status],
+                        outputs=[*clone_outputs, clone_asr_text, clone_status],
                     )
 
             # ── Tab 2: 音色设计 ────────────────────────────
@@ -486,7 +502,7 @@ def build_demo() -> gr.Blocks:
                                     normalize_text=nm, speed=sp, duration=du,
                                 ),
                                 mode="design",
-                            )
+                            )[:2]
 
                         ds_btn.click(
                             _design_fn,
