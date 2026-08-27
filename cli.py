@@ -8,7 +8,7 @@ OmniVoice 配音工具 — CLI 入口（文本文件 → WAV）
   uv run python cli.py --transcribe <ref_audio.wav>            # ASR 转写（校对/数据集用）
 
 模型逻辑全部在 src/ 包（共享核心 + 推理后端），本文件只做参数解析、转写/生成
-流程编排与文件输出；后端默认 GGUF（BF16，设置见 settings.py），Web 界面见 web.py。
+流程编排与文件输出；后端默认 GGUF（BF16，设置见 src/config.py），Web 界面见 web.py。
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from src import (
 )
 
 # 推理后端只保留 GGUF（src/backends/gguf.py：omnivoice.cpp + GGUF 权重）；
-# 可调设置统一在 settings.py（GGUF 权重 / C++ 二进制 / ASR / Web 选项等）
+# 可调设置统一在 src/config.py（GGUF 权重 / C++ 二进制 / ASR / Web 选项等）
 from src.backends.gguf import generate, _load_model
 
 

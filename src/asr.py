@@ -26,15 +26,15 @@ import sys
 import time
 import urllib.request
 
-from .config import Config
-from .hf import _hf_download
-from settings import (
+from .config import (
     ASR_GGUF_BASE,
     ASR_GGUF_REPO,
     ASR_VAD_BASE,
     ASR_VAD_REPO,
+    Config,
     FUNASR_LLAMACPP_BIN,
 )
+from .hf import _hf_download
 
 _ASR_BIN_CACHE = None    # 进程内缓存：llama-funasr-sensevoice 路径
 _ASR_GGUF_CACHE = None   # 进程内缓存：(q8 路径, vad 路径)

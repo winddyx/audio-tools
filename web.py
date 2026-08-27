@@ -40,9 +40,9 @@ from src import (
     _GEN_PARAM_ENVS,
 )
 
-# 推理后端只保留 GGUF（src/backends/gguf.py）；可调设置统一在 settings.py
+# 推理后端只保留 GGUF（src/backends/gguf.py）；可调设置统一在 src/config.py
 # （GGUF 权重 / C++ 二进制 / ASR / Web 选项等）
-from settings import WEB_AUTO_OPEN_BROWSER, WEB_IP, WEB_PORT
+from src.config import WEB_AUTO_OPEN_BROWSER, WEB_IP, WEB_PORT
 from src.backends.gguf import generate, _load_model
 
 logger = logging.getLogger("omnivoice-web")
@@ -109,7 +109,7 @@ def _patch_gradio_audio_probe() -> None:
 _patch_gradio_audio_probe()
 
 # ── 启动行为配置（直接改这里的值，无需任何命令行参数/环境变量）──
-# 是否自动打开浏览器由 settings.py 的 WEB_AUTO_OPEN_BROWSER 控制
+# 是否自动打开浏览器由 src/config.py 的 WEB_AUTO_OPEN_BROWSER 控制
 # （env: OMNIVOICE_WEB_OPEN_BROWSER=1）
 
 
@@ -607,7 +607,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         root_path=args.root_path,
         theme=_THEME,
         css=_CSS,
-        # 是否自动打开浏览器由 settings.WEB_AUTO_OPEN_BROWSER 控制
+        # 是否自动打开浏览器由 config.WEB_AUTO_OPEN_BROWSER 控制
         inbrowser=WEB_AUTO_OPEN_BROWSER,
     )
     return 0

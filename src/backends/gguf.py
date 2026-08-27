@@ -11,16 +11,16 @@ GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
 模型管理（遵循项目规则）：
 - 两个 GGUF（omnivoice-base-BF16.gguf + omnivoice-tokenizer-BF16.gguf）统一经
   huggingface_hub 下载，落 HF 默认缓存；本地优先 + hf-mirror 兜底（src/hf.py）。
-- 推理二进制 omnivoice-tts：settings.CPP_BIN 显式指定；否则自动 clone + 编译
+- 推理二进制 omnivoice-tts：config.CPP_BIN 显式指定；否则自动 clone + 编译
   omnivoice.cpp 到项目内 vendor/omnivoice.cpp/（gitignore，首次约 10-20 分钟）；
-  settings.CPP_SRC 可指向已有源码目录、settings.CPP_BUILD_ARGS 可追加 cmake 参数。
+  config.CPP_SRC 可指向已有源码目录、config.CPP_BUILD_ARGS 可追加 cmake 参数。
 - 设备映射（GGML_BACKEND）：mps→MTL0，cuda→CUDA0，cpu→CPU；xpu/留空
   交给运行时自动选择（SYCL 未在官方 backend 表；注意 ggml 的 Metal 设备名是
   MTL0 而非 "Metal"）。设备推理失败自动回退 CPU 重试一次（符合设备加速优先级规则）。
 - 输出 24 kHz mono WAV（GGUF 量化随文件而定，DTYPE 不适用；默认 BF16，
-  可在 settings.py 用 GGUF_BASE / GGUF_CODEC 切回 Q8_0 等变体）。
+  可在 src/config.py 用 GGUF_BASE / GGUF_CODEC 切回 Q8_0 等变体）。
 
-以上可调项统一在项目根 settings.py 中维护，同名环境变量可运行时覆盖。
+以上可调项统一在 src/config.py 中维护，同名环境变量可运行时覆盖。
 参考音频转写（ref_text）复用 src/asr.py 的 SenseVoiceSmall-GGUF，与 TTS 模型无关。
 """
 
@@ -34,17 +34,17 @@ import sys
 import tempfile
 import time
 
-from ..config import Config
-from ..hf import _hf_download
-from settings import (
+from ..config import (
     CPP_BIN,
     CPP_BUILD_ARGS,
     CPP_SRC,
+    Config,
     GGUF_BASE,
     GGUF_CODEC,
     GGUF_DEBUG,
     GGUF_REPO,
 )
+from ..hf import _hf_download
 
 # 上游仓库固定地址（非可调设置，仅在自动 clone 时使用）
 _CPP_REPO = "https://github.com/ServeurpersoCom/omnivoice.cpp.git"

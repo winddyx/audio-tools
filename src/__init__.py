@@ -2,7 +2,7 @@
 OmniVoice 配音工具 — 核心包（src/）
 
 共享核心（与推理后端无关）：
-- config：Config 数据类 + _to_bool
+- config：Config 数据类 + _to_bool + 全局可调设置（GGUF/ASR/Web，环境变量可覆盖）
 - logs：HF 相关第三方库日志降噪（_quiet_hf_logs）
 - device：设备检测与容错（get_best_device / mps、xpu 回退 CPU）
 - hf：HuggingFace 下载与缓存管理（本地优先 + hf-mirror 兜底）

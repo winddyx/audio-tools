@@ -6,7 +6,7 @@
 - **声音设计**：用指令（如 `female, low pitch, british accent`）合成指定音色
 - **自动音色**：不传参考音频与指令，模型自动选择音色
 
-提供 CLI（`cli.py`）与 Web 界面（`web.py`），共用同一套核心（`src/` 包），全部模型与可调设置统一在项目根 `settings.py`：
+提供 CLI（`cli.py`）与 Web 界面（`web.py`），共用同一套核心（`src/` 包），全部模型与可调设置统一在 `src/config.py`：
 
 | 模块 | 实现 |
 |---|---|
@@ -60,7 +60,7 @@ uv run python web.py --share         # 创建公开链接
 ```
 
 - 监听 `0.0.0.0:38001`（`--ip`/`--port` 可改）
-- **自动打开浏览器**：由 `settings.py` 的 `WEB_AUTO_OPEN_BROWSER` 控制（默认 `False`，改为 `True` 或设 `OMNIVOICE_WEB_OPEN_BROWSER=1` 则启动后自动用默认浏览器打开），无需命令行参数
+- **自动打开浏览器**：由 `src/config.py` 的 `WEB_AUTO_OPEN_BROWSER` 控制（默认 `False`，改为 `True` 或设 `OMNIVOICE_WEB_OPEN_BROWSER=1` 则启动后自动用默认浏览器打开），无需命令行参数
 - 语音克隆页支持**抽卡**：设置次数 N，一次生成 N 个结果供挑选
 - 生成参数（推理步数、时长等）与参考文本/附加指令在"生成参数"折叠面板中（GGUF 后端仅支持 `steps` / `denoise` / `chunk-duration` / `chunk-threshold` / `duration` 子集，其余忽略）
 - ASR 识别的参考文本会同步打印到终端（与 cli.py 一致）
@@ -88,7 +88,7 @@ uv run python web.py --share         # 创建公开链接
 | `ASR_VAD_REPO` / `ASR_VAD_BASE` | VAD 权重仓库 ID / GGUF 文件（默认 `FunAudioLLM/fsmn-vad-GGUF` / `fsmn-vad.gguf`） |
 | `FUNASR_LLAMACPP_BIN` | 指定已下载的 `llama-funasr-sensevoice` 二进制（留空自动下载到 `vendor/funasr-llamacpp/`） |
 | `OMNI_PORT` / `OMNIVOICE_WEB_IP` | web 端口（默认 38001）/ 监听地址（默认 0.0.0.0） |
-| `OMNIVOICE_WEB_OPEN_BROWSER` | `1` 启动后自动打开浏览器（对应 settings.WEB_AUTO_OPEN_BROWSER） |
+| `OMNIVOICE_WEB_OPEN_BROWSER` | `1` 启动后自动打开浏览器（对应 config.WEB_AUTO_OPEN_BROWSER） |
 | `HF_ENDPOINT` / `HF_NO_MIRROR_FALLBACK` | HuggingFace 镜像 / 关闭镜像兜底 |
 | `HF_LOCAL_FIRST` | `0` 关闭本地优先（强制联网校验） |
 
@@ -96,9 +96,8 @@ uv run python web.py --share         # 创建公开链接
 
 ```
 cli.py / web.py     业务入口（CLI / Gradio Web）
-settings.py         所有可调设置（改文件或环境变量覆盖）
 src/
-├── config.py       Config 数据类
+├── config.py       Config 数据类 + 全局可调设置（GGUF/ASR/Web，环境变量覆盖）
 ├── logs.py         HF 相关第三方库日志降噪
 ├── device.py       设备检测与容错（cuda > xpu > mps > cpu）
 ├── hf.py           HuggingFace 下载与缓存管理
