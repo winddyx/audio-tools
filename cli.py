@@ -31,8 +31,10 @@ from src import (
 )
 
 # 推理后端只保留 GGUF（src/backends/gguf.py：omnivoice.cpp + GGUF 权重）；
-# 可调设置统一在 src/config.py（GGUF 权重 / C++ 二进制 / ASR / Web 选项等）
-from src.backends.gguf import generate, _load_model
+# 可调设置统一在 src/config.py（GGUF 权重 / C++ 二进制 / ASR / Web 选项等）。
+# 合成流程统一走 src/pipeline.py（ASR → 后端 → 命名 → 写盘），本文件只做
+# 参数解析、进度显示与文件输出。
+from src.pipeline import synthesize
 
 
 def _run_transcribe(cfg: Config, logger: logging.Logger) -> None:
@@ -202,7 +204,7 @@ def main(argv: Optional[list[str]] = None) -> None:
 
         # 参考音频直接交给模型处理（模型内部自行加载/重采样/转单声道，
         # 无需 ffmpeg 预转换）；ref_text 省略时默认用 SenseVoiceSmall-GGUF 转写参考音频
-        # （不依赖 OmniVoice 内部 Whisper ASR）
+        # （不依赖 OmniVoice 内部 Whisper ASR）。转写只做一次，多轮抽卡复用
         ref_text = cfg.ref_text
         if cfg.ref_audio and not ref_text:
             logger.info("ℹ️ ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
@@ -211,31 +213,22 @@ def main(argv: Optional[list[str]] = None) -> None:
             if not ref_text:
                 logger.error("❌ ASR 转写结果为空（参考音频可能为静音）")
                 sys.exit(1)
-        model = _load_model(cfg, logger)
 
         # ── 多轮生成 ──
         out_dir = (os.path.abspath(cfg.output_dir)
                    if cfg.output_dir
                    else os.path.dirname(os.path.abspath(cfg.text_path)))
         os.makedirs(out_dir, exist_ok=True)
-        out_base = os.path.join(out_dir, os.path.basename(cfg.text_path))
+        out_name = os.path.basename(cfg.text_path)
         gen_kwargs = _gen_kwargs()
 
-        import soundfile as sf  # 与上游 CLI 一致，用 soundfile 保存 WAV
         from tqdm import tqdm  # 进度条
 
         for draw in range(1, cfg.draw_count + 1):
-            # 文件名：<文本名>.<unix 秒时间戳>.wav（不含抽卡序号）。
-            # 同秒内多轮时递增秒数，避免覆盖已有文件
-            ts = int(time.time())
-            out_path = f"{out_base}.{ts}.wav"
-            while os.path.exists(out_path):
-                ts += 1
-                out_path = f"{out_base}.{ts}.wav"
             logger.info("  [%d/%d] 生成中 …", draw, cfg.draw_count)
 
-            # 上游 generate() 无内部进度回调：起一个后台线程实时刷新耗时进度条，
-            # generate 返回后关闭（仅显示 elapsed，不伪造步进百分比）
+            # 合成耗时不可知（后端无进度回调）：起一个后台线程实时刷新耗时
+            # 进度条，synthesize 返回后关闭（仅显示 elapsed，不伪造步进百分比）
             pbar = tqdm(total=None, bar_format="{desc}", leave=False)
             stop = threading.Event()
 
@@ -252,25 +245,28 @@ def main(argv: Optional[list[str]] = None) -> None:
             spinner.start()
             t1 = time.time()
             try:
-                audios = generate(
+                result = synthesize(
                     cfg, logger,
                     text=text,
                     language=cfg.language or None,
                     ref_audio=cfg.ref_audio or None,
-                    # 克隆模式下 ref_text 已由用户提供或 SenseVoiceSmall-GGUF 转写（保证非空非 None，
-                    # 模型内部不会走 Whisper 兜底）；声音设计/自动音色模式传 None
+                    # 克隆模式下 ref_text 已由用户提供或 SenseVoiceSmall-GGUF 转写
+                    # （保证非空非 None，模型内部不会走 Whisper 兜底）；
+                    # 声音设计/自动音色模式传 None
                     ref_text=ref_text if cfg.ref_audio else None,
                     instruct=cfg.instruct or None,
-                    **gen_kwargs,
+                    out_dir=out_dir,
+                    out_name=out_name,
+                    gen_kwargs=gen_kwargs,
                 )
             finally:
                 stop.set()
                 spinner.join(timeout=1.0)
                 pbar.close()
-            sf.write(out_path, audios[0], model.sampling_rate)
-            kb = os.path.getsize(out_path) / 1024
+            kb = os.path.getsize(result.out_path) / 1024
             logger.info("  %s  (%.0f KB, %.1f s)",
-                        os.path.basename(out_path), kb, time.time() - t1)
+                        os.path.basename(result.out_path), kb,
+                        time.time() - t1)
     except Exception:
         # cfg 可能尚未赋值（_parse_args/_resolve_config 阶段抛错）——用局部变量兜底
         cfg = locals().get("cfg")

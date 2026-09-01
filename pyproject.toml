@@ -19,7 +19,10 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = []
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 # ── Intel oneAPI (Arc GPU) 加速 ───────────────────────────
 # torch/torchaudio 从 PyTorch 官方 xpu index 安装（torch 2.11.0+xpu，自带

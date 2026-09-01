@@ -7,7 +7,9 @@ OmniVoice-GGUF）；ASR 用 SenseVoiceSmall-GGUF（src/asr.py，FunASR llama.cpp
 runtime）。
 
 本文件保留仅为兼容历史 `from omni import ...` 的调用方，等价于旧单文件
-omni.py（GGUF 后端）。新代码请从 src 导入；可调设置统一在 src/config.py。
+omni.py（GGUF 后端）。注意：`generate` 现返回 `AudioResult`（含 `.audio` /
+`.sampling_rate` / `.chunks`），不再返回裸 `[音频数组]`。新代码请从 src 导入；
+可调设置统一在 src/config.py。
 """
 
 from __future__ import annotations

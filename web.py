@@ -26,8 +26,6 @@ from typing import Any, Dict, Optional
 
 import gradio as gr
 import gradio.processing_utils as _gradio_proc
-import numpy as np
-import soundfile as sf
 
 from src.lang_map import LANG_NAME_TO_ID, lang_display_name
 
@@ -36,14 +34,15 @@ from src import (
     Config,
     get_best_device,
     _quiet_hf_logs,
-    _transcribe_ref,
     _GEN_PARAM_ENVS,
 )
 
 # 推理后端只保留 GGUF（src/backends/gguf.py）；可调设置统一在 src/config.py
 # （GGUF 权重 / C++ 二进制 / ASR / Web 选项等）
 from src.config import WEB_AUTO_OPEN_BROWSER, WEB_IP, WEB_PORT
-from src.backends.gguf import generate, _load_model
+# 合成流程统一走 src/pipeline.py；_load_model 仅用于启动预热（常驻 serve 预热）
+from src.backends.gguf import _load_model
+from src.pipeline import synthesize
 
 logger = logging.getLogger("omnivoice-web")
 
@@ -209,7 +208,7 @@ def build_demo() -> gr.Blocks:
     # 生成临时目录：项目根目录下 .tmp（退出时 atexit 清理，启动时清扫残留）
     os.makedirs(_TMP_DIR, exist_ok=True)
 
-    # ── 共用生成核心（模型调用全部走后端 _load_model/generate）────
+    # ── 共用生成核心（统一走 src/pipeline.synthesize）────
 
     def _gen_core(
         text: str,
@@ -225,69 +224,41 @@ def build_demo() -> gr.Blocks:
         ASR 参考文本：clone 模式且本次由 ASR 转写时返回转写结果，否则返回 ""，
         供 UI 在状态上方展示（cli 侧已打印到终端）。
         """
-        asr_text = ""
         if not text or not text.strip():
-            return None, "请输入待合成文本。", asr_text
+            return None, "请输入待合成文本。", ""
 
-        # 复用后端：Config + _load_model（GGUF 首次运行自动编译/下载）
         cfg = Config(device=_DEVICE)
-        model = _load_model(cfg, logger)
-
         lang = _lang_code(language) or None
         kw = _gen_kwargs_from_ui(ui)
 
         try:
-            if mode == "clone":
-                if not ref_audio:
-                    return None, "请上传参考音频。", asr_text
-                if not ref_text:
-                    # 复用 src.asr 的 SenseVoiceSmall-GGUF 转写（llama.cpp runtime；
-                    # 模型自动检测中/英，--language 仅作记录）
-                    asr_cfg = Config(device=_DEVICE, ref_audio=ref_audio,
-                                     language=lang or "")
-                    ref_text = _transcribe_ref(asr_cfg, logger)
-                    asr_text = ref_text
-                    # ASR 识别的参考文本同步打到终端（与 cli.py 一致，方便校对）
-                    logger.info("📝 参考文本: %s", ref_text)
-                audios = generate(
-                    cfg, logger,
-                    text=text.strip(),
-                    language=lang,
-                    ref_audio=ref_audio,
-                    ref_text=ref_text,
-                    instruct=instruct or None,
-                    **kw,
-                )
-            else:
-                audios = generate(
-                    cfg, logger,
-                    text=text.strip(),
-                    language=lang,
-                    instruct=instruct or None,
-                    **kw,
-                )
+            if mode == "clone" and not ref_audio:
+                return None, "请上传参考音频。", ""
+            result = synthesize(
+                cfg, logger,
+                text=text,
+                language=lang,
+                ref_audio=ref_audio or None,
+                # 缺省时 pipeline 内部用 SenseVoiceSmall-GGUF 转写（不依赖
+                # OmniVoice 内部 Whisper ASR），转写结果回填 result.ref_text
+                ref_text=ref_text or None,
+                instruct=instruct or None,
+                out_dir=_TMP_DIR,
+                out_name=str(int(time.time())),
+                gen_kwargs=kw,
+            )
         except Exception as e:
             logger.exception("生成失败")
-            return None, f"错误: {type(e).__name__}: {e}", asr_text
+            return None, f"错误: {type(e).__name__}: {e}", ""
 
-        # 转 numpy + 裁剪到 [-1, 1]：上游 generate() 可能返回 torch.Tensor
-        # （无 .astype），且超界采样点直接 cast 会 int16 回绕产生爆音
-        arr = audios[0]
-        if hasattr(arr, "cpu"):  # torch.Tensor
-            arr = arr.cpu().numpy()
-        waveform = (np.clip(arr, -1.0, 1.0) * 32767).astype(np.int16)
-        # 文件名 = 生成完成时的 unix 时间戳（秒）；同秒内冲突则递增秒数
-        ts = int(time.time())
-        out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
-        while os.path.exists(out_path):
-            ts += 1
-            out_path = os.path.join(_TMP_DIR, f"{ts}.wav")
-        sf.write(out_path, waveform, model.sampling_rate)
+        if result.ref_text:
+            # ASR 识别的参考文本同步打到终端（与 cli.py 一致，方便校对）
+            logger.info("📝 参考文本: %s", result.ref_text)
         # 返回文件路径而非 (sr, data) 元组：路径分支让 gradio 以文件 basename
         # （unix 时间戳）作为下载文件名；gradio 对路径的 ffprobe 可播放性探测
         # 已由 _patch_gradio_audio_probe() 兜底（ffprobe 缺失时视为可播放），
         # Windows 常见"有 ffmpeg 无 ffprobe"不再抛 FFExecutableNotFoundError。
-        return out_path, "生成完成 ✓", asr_text
+        return result.out_path, "生成完成 ✓", result.ref_text
 
     # ── 主题与样式（gradio 6: 传参到 launch()，不传 Blocks 构造器）────
 

@@ -2,11 +2,15 @@
 GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
 + Serveurperso/OmniVoice-GGUF BF16 权重。
 
-项目唯一推理后端（transformers 后端已移除），接口：
+项目唯一推理后端（transformers 后端已移除），接口（见 backends/protocol.py）：
 
     _load_model(cfg, logger) → 句柄（.sampling_rate = 24000）
-    generate(cfg, logger, text=…, language=…, ref_audio=…, ref_text=…,
-             instruct=…, **gen_kwargs) → [音频数组]
+    generate(cfg, logger, **kwargs) → AudioResult（音频 + 分块元数据）
+
+进程模型：每次合成新起 `omnivoice-tts` 一次性 subprocess（启动 py → 加载 →
+生成 → 退出，无任何后台常驻进程）。分块元数据经 `--chunks-out` sidecar 文件
+返回（C++ text-chunker.h 的分段结果，single-shot 为整篇单块），供 Python 侧
+做段落化工作流。
 
 模型管理（遵循项目规则）：
 - 两个 GGUF（omnivoice-base-BF16.gguf + omnivoice-tokenizer-BF16.gguf）统一经
@@ -26,6 +30,7 @@ GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
@@ -45,6 +50,7 @@ from ..config import (
     GGUF_REPO,
 )
 from ..hf import _hf_download
+from .protocol import AudioResult, ChunkInfo
 
 # 上游仓库固定地址（非可调设置，仅在自动 clone 时使用）
 _CPP_REPO = "https://github.com/ServeurpersoCom/omnivoice.cpp.git"
@@ -217,7 +223,17 @@ def _gen_kwargs_to_cli(kwargs: dict, logger: logging.Logger) -> list[str]:
     return cli
 
 
-# ── 对外接口（cli.py / web.py 使用）────────────────────────
+def _read_chunks_sidecar(path: str) -> list[ChunkInfo]:
+    """读 --chunks-out sidecar（JSON 字符串数组）→ ChunkInfo 列表。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [ChunkInfo(text=str(t)) for t in data if str(t)]
+
+
+# ── 对外接口（cli.py / web.py 经 src/pipeline.py 调用）────
 
 
 class _ModelHandle:
@@ -231,24 +247,36 @@ class _ModelHandle:
         self.codec = codec
 
 
+_HANDLE_CACHE: _ModelHandle | None = None
+
+
 def _load_model(cfg: Config, logger: logging.Logger) -> _ModelHandle:
-    """准备 GGUF 后端：确保二进制已编译、权重已下载，返回句柄（进程内只打一次日志）。"""
+    """准备 GGUF 后端：确保二进制已编译、权重已下载，返回句柄
+    （进程内缓存，多轮调用只打一次日志；不产生任何后台进程）。"""
+    global _HANDLE_CACHE
+    if _HANDLE_CACHE is not None:
+        return _HANDLE_CACHE
     first_call = _BINARY_CACHE is None or _GGUF_CACHE is None
     binary = _ensure_binary(logger)
     base, codec = _ensure_gguf(logger)
+    handle = _ModelHandle(binary, base, codec)
+    _HANDLE_CACHE = handle
     if first_call:
         logger.info("✓ GGUF 后端就绪（%s，%d Hz，设备 %s）",
                     os.path.basename(base).replace("omnivoice-base-", "").replace(".gguf", ""),
                     _SAMPLING_RATE, cfg.device or "auto")
-    return _ModelHandle(binary, base, codec)
+    return handle
 
 
-def generate(cfg: Config, logger: logging.Logger, **kwargs):
-    """调用 omnivoice-tts 生成音频，返回 [音频数组]。
+def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
+    """调用 omnivoice-tts 生成音频，返回 AudioResult（音频 + 分块元数据）。
 
     kwargs 支持：text / language / ref_audio / ref_text / instruct，
     以及 src/params.py 中 GGUF 支持的生成参数子集（num_step / denoise /
     audio_chunk_duration / audio_chunk_threshold / duration）。
+
+    进程模型：每次生成新起一次性 subprocess（模型随之加载），退出即清理，
+    无后台常驻进程。分块元数据由 --chunks-out sidecar 返回。
     """
     text = kwargs.pop("text", "")
     language = kwargs.pop("language", None)
@@ -266,6 +294,9 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs):
 
     fd, out_wav = tempfile.mkstemp(suffix=".wav", prefix="gguf-", dir=_TMP_DIR)
     os.close(fd)
+    fd2, chunks_out = tempfile.mkstemp(suffix=".json", prefix="gguf-chunks-",
+                                       dir=_TMP_DIR)
+    os.close(fd2)
     ref_tmp: str | None = None
     try:
         cmd = [handle.binary, "--model", handle.base, "--codec", handle.codec,
@@ -274,14 +305,15 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs):
             cmd += ["--lang", str(language)]
         if ref_audio:
             cmd += ["--ref-wav", ref_audio]
-            fd2, ref_tmp = tempfile.mkstemp(suffix=".txt", prefix="ref-",
+            fd3, ref_tmp = tempfile.mkstemp(suffix=".txt", prefix="ref-",
                                             dir=_TMP_DIR)
-            with os.fdopen(fd2, "w", encoding="utf-8") as f:
-                f.write(ref_text)
+            with os.fdopen(fd3, "w", encoding="utf-8") as f:
+                f.write(ref_text or "")
             cmd += ["--ref-text", ref_tmp]
         elif instruct:
             cmd += ["--instruct", instruct]
         cmd += _gen_kwargs_to_cli(kwargs, logger)
+        cmd += ["--chunks-out", chunks_out]
 
         env = dict(os.environ)
         backend = _ggml_backend(cfg.device)
@@ -318,11 +350,12 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs):
 
         import soundfile as sf
         data, sr = sf.read(out_wav, dtype="float32", always_2d=False)
-        logger.info("✓ 生成完成: %.1fs（%d Hz，%.1f s 音频）",
-                    time.time() - t0, sr, len(data) / sr)
-        return [data]
+        chunks = _read_chunks_sidecar(chunks_out)
+        logger.info("✓ 生成完成: %.1fs（%d Hz，%.1f s 音频，%d 段）",
+                    time.time() - t0, sr, len(data) / sr, len(chunks))
+        return AudioResult(audio=data, sampling_rate=sr, chunks=chunks)
     finally:
-        for p in (out_wav, ref_tmp):
+        for p in (out_wav, ref_tmp, chunks_out):
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
