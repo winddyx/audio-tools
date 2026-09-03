@@ -1,8 +1,8 @@
 """Web 界面入口（gradio）：合成 / ASR 两个标签页。
 
-页面只依赖 ov.api 与 ov.settings；渲染参数控件时按模型注册表的
+页面只依赖 src.api 与 src.settings；渲染参数控件时按模型注册表的
 supported_params 生成（模板化：新模型注册后自动出现可调项）。
-运行设置（IP/端口/自动开浏览器）在 ov/settings.py 顶部变量。
+运行设置（IP/端口/自动开浏览器）在 src/settings.py 顶部变量。
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from typing import Optional
 
 import gradio as gr
 
-from ov import api, settings
-from ov.model import get_model
-from ov.types import GenParams
+from src import api, settings
+from src.model import get_model
+from src.types import GenParams
 
 # ── 纯 UI 内容：语言下拉（引擎内置 600+ 语言，这里给常用子集）──
 _LANGS: list[tuple[str, str]] = [
@@ -55,7 +55,7 @@ _patch_gradio_audio_probe()
 
 
 def _out_dir() -> str:
-    from ov import settings as s
+    from src import settings as s
 
     return s.OUTPUT_DIR or str(s.project_root() / "out")
 
@@ -105,7 +105,7 @@ def build_demo() -> gr.Blocks:
         gr.Markdown(
             "# OmniVoice Web\n"
             "GGUF 本地推理：语音克隆 / 声音设计 / 自动音色 / ASR 转写。"
-            " 设置见 ov/settings.py 顶部变量。"
+            " 设置见 src/settings.py 顶部变量。"
         )
         with gr.Tabs():
             # ── 合成 ────────────────────────────────────

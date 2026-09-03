@@ -1,8 +1,8 @@
 """编排层：与具体模型无关的合成/转写/落盘流程（唯一实现处）。
 
-CLI / Web 一律经 ov.api 到达本层；ASR 转写、输出命名、写 WAV、
+CLI / Web 一律经 src.api 到达本层；ASR 转写、输出命名、写 WAV、
 长文本兜底分块只在这里实现一次。引擎有 native_longform 能力时
-长文本走引擎原生分块，否则用 ov.text 的 Python 兜底逐段合成拼接。
+长文本走引擎原生分块，否则用 src.text 的 Python 兜底逐段合成拼接。
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ def complete(
 ) -> SynthesisOutcome:
     """一次完整合成：引擎生成（含长文本策略）→ 命名 → 写 WAV。
 
-    语音克隆缺 ref_text 的 ASR 预转写由 ov.api 负责（此处假定已就绪）。
+    语音克隆缺 ref_text 的 ASR 预转写由 src.api 负责（此处假定已就绪）。
     """
     logger = logger or logging.getLogger("ov")
     if _native_or_short(spec, req):

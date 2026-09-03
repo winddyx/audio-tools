@@ -114,7 +114,7 @@ WEB_AUTO_OPEN_BROWSER = _env_bool("OMNIVOICE_WEB_OPEN_BROWSER", False)
 
 # ── 派生路径（不需要用户改，除非要换位置）─────────────────
 def project_root() -> Path:
-    """项目根：<repo>/ov/settings.py → ov → 项目根。"""
+    """项目根：<repo>/src/settings.py → src → 项目根。"""
     return Path(__file__).resolve().parent.parent
 
 
