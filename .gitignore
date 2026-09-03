@@ -2,26 +2,26 @@
 __pycache__/
 *.pyc
 .venv/
+venv/
 
-# 模型缓存（自动下载，HF 默认缓存；本地项目不提交）
+# 模型缓存（自动下载）
 models/
 
-# 运行时目录：native 引擎源码/编译产物/下载的二进制（runtime/）
-runtime/
+# GGUF 后端：omnivoice.cpp 源码 + 编译产物（clone 到项目内，gitignore）
+vendor/
 
-# 输出（默认落盘位置；OUTPUT_DIR 可改）
-out/
-
-# 临时目录
-.tmp/
-
-# OS / IDE
+# OS
 .DS_Store
+
+# IDE
 .vscode/
 .idea/
 
 # 运行时产物
 *.profraw
+
+# Web 生成临时目录（项目内 .tmp，退出时清理）
+.tmp/
 
 # Reasonix 工具目录
 .reasonix/
