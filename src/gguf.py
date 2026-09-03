@@ -5,12 +5,10 @@ GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
 项目唯一推理后端（transformers 后端已移除），接口（本文件内定义）：
 
     _load_model(cfg, logger) → 句柄（.sampling_rate = 24000）
-    generate(cfg, logger, **kwargs) → AudioResult（音频 + 分块元数据）
+    generate(cfg, logger, **kwargs) → AudioResult（音频；chunks 恒空，协议保留）
 
 进程模型：每次合成新起 `omnivoice-tts` 一次性 subprocess（启动 py → 加载 →
-生成 → 退出，无任何后台常驻进程）。分块元数据经 `--chunks-out` sidecar 文件
-返回（C++ text-chunker.h 的分段结果，single-shot 为整篇单块），供 Python 侧
-做段落化工作流。
+生成 → 退出，无任何后台常驻进程）。
 
 模型管理（遵循项目规则）：
 - 两个 GGUF（omnivoice-base-BF16.gguf + omnivoice-tokenizer-BF16.gguf）统一经
@@ -30,7 +28,6 @@ GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shlex
@@ -58,11 +55,10 @@ from .hf import _hf_download
 
 @dataclass(frozen=True)
 class ChunkInfo:
-    """一段合成文本。
+    """一段合成文本（协议保留字段）。
 
-    由 C++ 分块器（text-chunker.h）给出的分段结果：句末标点 + 换行等规则
-    切出的每一块。single-shot 路径下为整篇文本单块。按段重生成时直接取
-    text 重新调用即可。
+    上游 omnivoice-tts CLI 不导出分块元数据（旧本地 patch 的 --chunks-out
+    已随上游重写失效），恒为空列表。
     """
 
     text: str
@@ -142,8 +138,50 @@ def _cpp_src_dir() -> str:
 
 
 def _run(cmd: list[str]) -> None:
-    """流式运行子进程（clone/编译/推理进度直接透传终端）。"""
+    """透传运行子进程（GGUF_DEBUG=1 调试模式：clone/编译输出直通终端）。"""
     subprocess.run(cmd, check=True)
+
+
+def _run_quiet(cmd: list[str], what: str) -> None:
+    """捕获运行子进程：成功静默；失败抛错并附输出尾部诊断。
+
+    默认模式（GGUF_DEBUG 未开）：clone/cmake 的进度噪音全部吞掉，
+    终端只留阶段标题与摘要，失败时输出尾部用于定位。
+    """
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        out = (proc.stderr or proc.stdout).strip()
+        raise RuntimeError("%s 失败（退出码 %d）\n%s"
+                           % (what, proc.returncode,
+                              out[-4000:] or "（无输出）"))
+
+
+def _run_progress(cmd: list[str], what: str, logger: logging.Logger) -> None:
+    """流式运行子进程，仅打印单行百分比进度（cmake 编译用，避免刷屏）。
+
+    每行输出只提取 '[NN%]' 更新同一行进度；其余细节吞掉。
+    失败时把捕获的尾部随异常抛出，便于定位。
+    """
+    import re
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    tail: list[str] = []
+    last_pct = -1
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        tail.append(line.rstrip())
+        del tail[:-_STDERR_TAIL_LINES]
+        m = re.search(r"\[\s*(\d+)%\]", line)
+        if m:
+            pct = int(m.group(1))
+            if pct >= last_pct + 10 or pct == 100:
+                last_pct = pct
+                logger.info("  %s: %d%%", what, pct)
+    rc = proc.wait()
+    if rc != 0:
+        raise RuntimeError("%s 失败（退出码 %d）\n%s"
+                           % (what, rc, "\n".join(tail) or "（无输出）"))
+    logger.info("  %s: 完成", what)
 
 
 def _ensure_tmp_dir() -> None:
@@ -180,7 +218,10 @@ def _clone_cpp(logger: logging.Logger) -> None:
     cmd = ["git", "clone", "--depth", "1", "--recurse-submodules",
            "--shallow-submodules", _CPP_REPO, _cpp_src_dir()]
     logger.info("  git clone %s …", _CPP_REPO)
-    _run(cmd)
+    if GGUF_DEBUG:
+        _run(cmd)
+    else:
+        _run_quiet(cmd, "git clone omnivoice.cpp")
 
 
 def _build_cpp(logger: logging.Logger) -> None:
@@ -192,9 +233,17 @@ def _build_cpp(logger: logging.Logger) -> None:
     src_dir = _cpp_src_dir()
     build_dir = os.path.join(src_dir, "build")
     logger.info("  cmake 配置（%s）…", " ".join(args))
-    _run(["cmake", "-B", build_dir, "-S", src_dir, *args])
+    if GGUF_DEBUG:
+        _run(["cmake", "-B", build_dir, "-S", src_dir, *args])
+    else:
+        _run_quiet(["cmake", "-B", build_dir, "-S", src_dir, *args],
+                   "cmake 配置")
     logger.info("  cmake 编译（多核，请耐心等待）…")
-    _run(["cmake", "--build", build_dir, "-j"])
+    if GGUF_DEBUG:
+        _run(["cmake", "--build", build_dir, "-j"])
+    else:
+        _run_progress(["cmake", "--build", build_dir, "-j"],
+                      "cmake 编译", logger)
 
 
 def _ensure_binary(logger: logging.Logger) -> str:
@@ -231,10 +280,10 @@ _BINARY_CACHE: str | None = None
 def _ggml_backend(device: str) -> str | None:
     """设备 → GGML_BACKEND 环境变量（ggml 索引式设备名）。
 
-    实测本仓库 pin 的 ggml 0.17.0 中 Metal 设备注册名为 MTL0（并非 "Metal"），
-    cuda→CUDA0，mps→MTL0，cpu→CPU；xpu/未知不设置（GGML 运行时自动选择，
-    SYCL 未出现在官方 backend 表）。设备名不存在时二进制会硬失败，随后由
-    generate() 的 CPU 回退重试兜底。
+    实测 ggml Metal 设备注册名为 MTL0（并非 "Metal"），cuda→CUDA0，mps→MTL0，
+    cpu→CPU；xpu/未知不设置（GGML 运行时自动选择，SYCL 未出现在官方
+    backend 表）。设备名不存在时二进制会硬失败，随后由 generate() 的
+    CPU 回退重试兜底。
     """
     return {"cuda": "CUDA0", "mps": "MTL0", "cpu": "CPU"}.get(device or "")
 
@@ -259,16 +308,6 @@ def _gen_kwargs_to_cli(kwargs: dict, logger: logging.Logger) -> list[str]:
         logger.info("GGUF 后端不支持以下生成参数，已忽略: %s",
                     ", ".join(sorted(unsupported)))
     return cli
-
-
-def _read_chunks_sidecar(path: str) -> list[ChunkInfo]:
-    """读 --chunks-out sidecar（JSON 字符串数组）→ ChunkInfo 列表。"""
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return []
-    return [ChunkInfo(text=str(t)) for t in data if str(t)]
 
 
 # ── 对外接口（cli.py / web.py 经 src/pipeline.py 调用）────
@@ -307,14 +346,14 @@ def _load_model(cfg: Config, logger: logging.Logger) -> _ModelHandle:
 
 
 def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
-    """调用 omnivoice-tts 生成音频，返回 AudioResult（音频 + 分块元数据）。
+    """调用 omnivoice-tts 生成音频，返回 AudioResult（音频；chunks 恒空）。
 
     kwargs 支持：text / language / ref_audio / ref_text / instruct，
     以及 src/omni.py 中 GGUF 支持的生成参数子集（num_step / denoise /
     audio_chunk_duration / audio_chunk_threshold / duration）。
 
     进程模型：每次生成新起一次性 subprocess（模型随之加载），退出即清理，
-    无后台常驻进程。分块元数据由 --chunks-out sidecar 返回。
+    无后台常驻进程。chunks 由上游 CLI 无法导出，恒为空列表（协议保留）。
     """
     text = kwargs.pop("text", "")
     language = kwargs.pop("language", None)
@@ -332,9 +371,6 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
 
     fd, out_wav = tempfile.mkstemp(suffix=".wav", prefix="gguf-", dir=_TMP_DIR)
     os.close(fd)
-    fd2, chunks_out = tempfile.mkstemp(suffix=".json", prefix="gguf-chunks-",
-                                       dir=_TMP_DIR)
-    os.close(fd2)
     ref_tmp: str | None = None
     try:
         cmd = [handle.binary, "--model", handle.base, "--codec", handle.codec,
@@ -351,7 +387,6 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
         elif instruct:
             cmd += ["--instruct", instruct]
         cmd += _gen_kwargs_to_cli(kwargs, logger)
-        cmd += ["--chunks-out", chunks_out]
 
         env = dict(os.environ)
         backend = _ggml_backend(cfg.device)
@@ -388,12 +423,11 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
 
         import soundfile as sf
         data, sr = sf.read(out_wav, dtype="float32", always_2d=False)
-        chunks = _read_chunks_sidecar(chunks_out)
-        logger.info("生成完成: %.1fs（%d Hz，%.1f s 音频，%d 段）",
-                    time.time() - t0, sr, len(data) / sr, len(chunks))
-        return AudioResult(audio=data, sampling_rate=sr, chunks=chunks)
+        logger.info("生成完成: %.1fs（%d Hz，%.1f s 音频）",
+                    time.time() - t0, sr, len(data) / sr)
+        return AudioResult(audio=data, sampling_rate=sr)
     finally:
-        for p in (out_wav, ref_tmp, chunks_out):
+        for p in (out_wav, ref_tmp):
             if p and os.path.exists(p):
                 try:
                     os.remove(p)

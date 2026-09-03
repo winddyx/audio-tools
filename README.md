@@ -28,11 +28,11 @@ uv run python web.py
 ```
 vc.py / web.py ──> src/pipeline.py ──> src/gguf.py ──> omnivoice-tts（C++ 一次性子进程）
                       │                    │
-                      └ ASR 转写(src/funasr.py)  └ 读回 WAV + 分块 sidecar → AudioResult
+                      └ ASR 转写(src/funasr.py)  └ 读回 WAV → AudioResult
 ```
 
 - **进程模型**：无后台常驻进程。每次生成启动一次 `omnivoice-tts` 子进程（加载 GGUF → 合成 → 退出）；ASR 也是独立子进程。
 - **编排**：`pipeline.synthesize()` 统一处理 ASR 转写（克隆模式缺 ref_text 时）→ 后端生成 → 时间戳命名防覆盖 → 写 WAV；CLI/Web 只做参数与界面适配。
-- **断句与分块**（C++ `text-chunker.h`）：按句末标点切句，估时长低于阈值走整篇 single-shot，否则分块逐段生成再交叉淡化拼接；**句末强标点（。！？；：）后的换行是硬切分符**，行与行之间产生真实停顿。分块文本经 `--chunks-out` sidecar 返回，落在 `AudioResult.chunks`，可按段校对 / 只重生成某段。
+- **长文本处理**：长文本的分块由 C++（`text-chunker.h`）内部完成（`--chunk-duration` / `--chunk-threshold` 控制），Python 侧不感知分段，一次性读回完整 WAV。
 - **设备**：自动检测 CUDA > XPU > MPS > CPU（`GGML_BACKEND` 映射 mps→MTL0、cuda→CUDA0）；后端初始化失败自动回退 CPU 重试一次。
 - **模型**：TTS 与 ASR 权重经 HuggingFace 下载到默认缓存，本地优先 + hf-mirror 兜底；已备好的机器可用 `OMNIVOICE_CPP_BIN` / `FUNASR_LLAMACPP_BIN` 直接指定二进制。

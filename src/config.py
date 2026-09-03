@@ -97,7 +97,7 @@ GGUF_CODEC = _env("OMNIVOICE_GGUF_CODEC", "omnivoice-tokenizer-BF16.gguf")
 CPP_BIN = _env("OMNIVOICE_CPP_BIN", "")             # 已编译的 omnivoice-tts 绝对路径
 CPP_SRC = _env("OMNIVOICE_CPP_SRC", "")             # 已有源码目录（默认 vendor/omnivoice.cpp）
 CPP_BUILD_ARGS = _env("OMNIVOICE_CPP_BUILD_ARGS", "")  # 追加 cmake 参数，如 "-DGGML_CUDA=ON"
-# True = 透传 omnivoice-tts 的全部 stderr（ggml 内核编译 / MaskGIT 步进等，调试用）
+# True = 透传子进程原始输出（clone/编译/推理全部直通终端，调试用）
 GGUF_DEBUG = _env_bool("OMNIVOICE_GGUF_DEBUG", False)
 
 # ── ASR（参考音频转写）：SenseVoiceSmall-GGUF（FunASR llama.cpp runtime）──

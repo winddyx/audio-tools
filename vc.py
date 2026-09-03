@@ -25,6 +25,7 @@ from src import (
     Config,
     get_best_device,
     _gen_kwargs,
+    _load_model,
     _quiet_hf_logs,
     _to_bool,
     _transcribe_ref,
@@ -42,9 +43,9 @@ def _run_transcribe(cfg: Config, logger: logging.Logger) -> None:
 
     不加载 TTS 模型，独立于主流程运行。
     """
+    logger.info("")
+    logger.info("[1/1] ASR 转写（SenseVoiceSmall-GGUF）")
     print(_transcribe_ref(cfg, logger))
-
-
 
 
 # ── CLI 入口 ──────────────────────────────────────────────
@@ -202,11 +203,26 @@ def main(argv: Optional[list[str]] = None) -> None:
             logger.error("文本文件为空")
             sys.exit(1)
 
-        # 参考音频直接交给模型处理（模型内部自行加载/重采样/转单声道，
-        # 无需 ffmpeg 预转换）；ref_text 省略时默认用 SenseVoiceSmall-GGUF 转写参考音频
-        # （不依赖 OmniVoice 内部 Whisper ASR）。转写只做一次，多轮抽卡复用
+        # 终端输出分阶段、跟随运行逻辑：
+        #   推理准备 → ASR 转写参考音频（克隆且缺 ref_text 时）→ 生成 → 输出
         ref_text = cfg.ref_text
-        if cfg.ref_audio and not ref_text:
+        need_asr = bool(cfg.ref_audio and not ref_text)
+        total_stages = 3 + (1 if need_asr else 0)
+        stage_idx = 0
+
+        def _section(title: str) -> None:
+            nonlocal stage_idx
+            stage_idx += 1
+            logger.info("")
+            logger.info("[%d/%d] %s", stage_idx, total_stages, title)
+
+        # ── 阶段 1: 推理准备（编译二进制 + 定位 GGUF 权重，一次性，后续轮次走缓存）──
+        _section("推理准备")
+        _load_model(cfg, logger)
+
+        # ── 阶段 2: ASR（SenseVoiceSmall-GGUF 转写参考音频）──
+        if need_asr:
+            _section("ASR 转写")
             logger.info("ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
             ref_text = _transcribe_ref(cfg, logger)
             logger.info("参考文本: %s", ref_text)
@@ -214,35 +230,30 @@ def main(argv: Optional[list[str]] = None) -> None:
                 logger.error("ASR 转写结果为空（参考音频可能为静音）")
                 sys.exit(1)
 
-        # ── 多轮生成 ──
+        # ── 阶段 3: 生成（多轮抽卡）──
+        _section(f"{mode}生成")
         out_dir = (os.path.abspath(cfg.output_dir)
                    if cfg.output_dir
                    else os.path.dirname(os.path.abspath(cfg.text_path)))
         os.makedirs(out_dir, exist_ok=True)
         out_name = os.path.basename(cfg.text_path)
         gen_kwargs = _gen_kwargs()
-
-        from tqdm import tqdm  # 进度条
+        results: list = []
 
         for draw in range(1, cfg.draw_count + 1):
-            logger.info("  [%d/%d] 生成中 …", draw, cfg.draw_count)
-
-            # 合成耗时不可知（后端无进度回调）：起一个后台线程实时刷新耗时
-            # 进度条，synthesize 返回后关闭（仅显示 elapsed，不伪造步进百分比）
-            pbar = tqdm(total=None, bar_format="{desc}", leave=False)
+            logger.info("  [第 %d/%d 次] 生成中 …", draw, cfg.draw_count)
+            # 后端无进度回调：后台线程每 10s 打一行耗时，避免长合成时终端
+            # 长时间无输出（只提示已用时，不伪造步进百分比）
             stop = threading.Event()
 
-            def _tick() -> None:
+            def _heartbeat() -> None:
                 t0 = time.time()
-                while not stop.is_set():
-                    pbar.set_description_str(
-                        f"  生成中 [{draw}/{cfg.draw_count}] "
-                        f"{time.time() - t0:.1f}s")
-                    pbar.refresh()
-                    time.sleep(0.1)
+                while not stop.wait(10):
+                    logger.info("    已用时 %.0f s，继续生成中 …",
+                                time.time() - t0)
 
-            spinner = threading.Thread(target=_tick, daemon=True)
-            spinner.start()
+            hb = threading.Thread(target=_heartbeat, daemon=True)
+            hb.start()
             t1 = time.time()
             try:
                 result = synthesize(
@@ -261,12 +272,19 @@ def main(argv: Optional[list[str]] = None) -> None:
                 )
             finally:
                 stop.set()
-                spinner.join(timeout=1.0)
-                pbar.close()
+                hb.join(timeout=1.0)
+            results.append(result)
             kb = os.path.getsize(result.out_path) / 1024
-            logger.info("  %s  (%.0f KB, %.1f s)",
+            logger.info("  生成完成: %.1fs", time.time() - t1)
+            logger.info("  输出文件: %s  (%.0f KB, %.1f s)",
                         os.path.basename(result.out_path), kb,
-                        time.time() - t1)
+                        result.duration_sec)
+
+        # ── 阶段 4: 输出汇总 ──
+        _section("输出")
+        for r in results:
+            logger.info("  %s", r.out_path)
+        logger.info("共 %d 个文件，写入 %s", len(results), out_dir)
     except Exception:
         # cfg 可能尚未赋值（_parse_args/_resolve_config 阶段抛错）——用局部变量兜底
         cfg = locals().get("cfg")
