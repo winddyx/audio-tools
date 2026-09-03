@@ -72,9 +72,10 @@ def _find_built_binary() -> str | None:
     return hits[-1] if hits else None
 
 
-def _run_quiet(cmd: list[str], what: str, logger: logging.Logger) -> None:
+def _run_quiet(cmd: list[str], what: str, logger: logging.Logger,
+               env: dict | None = None) -> None:
     """捕获运行子进程：成功静默；失败抛错并附输出尾部诊断。"""
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         out = (proc.stderr or proc.stdout).strip()
         raise RuntimeError("%s 失败（退出码 %d）\n%s"
@@ -86,10 +87,11 @@ def _clone_and_build(logger: logging.Logger) -> None:
     """clone audio.cpp 并构建 audiocpp_cli（custom 模型集，仅本项目所需族）。"""
     src_dir = _src_dir()
     os.makedirs(VENDOR_DIR, exist_ok=True)
+    env = dict(os.environ)
     if not os.path.isdir(src_dir):
         logger.info("  git clone %s …", AUDIOCPP_REPO)
         _run_quiet(["git", "clone", "--depth", "1", AUDIOCPP_REPO, src_dir],
-                   "git clone audio.cpp", logger)
+                   "git clone audio.cpp", logger, env=env)
 
     # 只构建本项目的模型族，避免全套 62+ 族（耗时/体积）
     models = "omnivoice,index_tts2,sense_asr"
@@ -98,9 +100,9 @@ def _clone_and_build(logger: logging.Logger) -> None:
         "-DCMAKE_BUILD_TYPE=Release",
         "-DAUDIOCPP_MODEL_SET=custom", f"-DAUDIOCPP_MODELS={models}",
     ]
-    env = dict(os.environ)
-    # macOS：Apple clang 不带 OpenMP，须用 brew libomp（头 + -fopenmp flag +
-    # libomp.dylib 路径）；缺失时 cmake 的 find_package(OpenMP) 会配置失败
+    # macOS：Apple clang 不带 OpenMP，须用 brew libomp。include 路径与
+    # -fopenmp flag 直接拼进 OpenMP_C/CXX_FLAGS（cmake 探测与后续编译
+    # 都依赖它找 omp.h / libomp.dylib）；C_INCLUDE_PATH 作双保险一并传入。
     if sys.platform == "darwin":
         for home in ("/opt/homebrew", "/usr/local"):
             inc = os.path.join(home, "opt", "libomp", "include")
@@ -109,8 +111,8 @@ def _clone_and_build(logger: logging.Logger) -> None:
                 env.setdefault("C_INCLUDE_PATH", inc)
                 env.setdefault("CPLUS_INCLUDE_PATH", inc)
                 args += [
-                    "-DOpenMP_C_FLAGS=-Xclang -fopenmp",
-                    "-DOpenMP_CXX_FLAGS=-Xclang -fopenmp",
+                    f"-DOpenMP_C_FLAGS=-Xclang -fopenmp -I{inc}",
+                    f"-DOpenMP_CXX_FLAGS=-Xclang -fopenmp -I{inc}",
                     "-DOpenMP_C_LIB_NAMES=libomp",
                     "-DOpenMP_CXX_LIB_NAMES=libomp",
                     f"-DOpenMP_libomp_LIBRARY={lib}",
@@ -119,12 +121,12 @@ def _clone_and_build(logger: logging.Logger) -> None:
     if AUDIOCPP_BUILD_ARGS:
         args.extend(shlex.split(AUDIOCPP_BUILD_ARGS))
     logger.info("  cmake 配置（custom: %s）…", models)
-    _run_quiet(["cmake", *args], "cmake 配置", logger)
+    _run_quiet(["cmake", *args], "cmake 配置", logger, env=env)
     build_dir = os.path.join(src_dir, "build", "audiocpp")
     logger.info("  cmake 编译（多核，请耐心等待）…")
     _run_quiet(["cmake", "--build", build_dir, "--target", "audiocpp_cli",
                 "-j", str(os.cpu_count() or 4)],
-               "cmake 编译", logger)
+               "cmake 编译", logger, env=env)
 
 
 def _ensure_binary(logger: logging.Logger) -> str:
