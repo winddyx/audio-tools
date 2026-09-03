@@ -5,12 +5,8 @@
 （omnivoice-tts C++/GGML、llama-funasr-sensevoice）一次性子进程中完成，
 无 torch、无后台常驻进程。
 
-本项目同时是「生成模型参考模板」：`src/` 核心层与具体模型无关，加新生成模型
-只需在 `src/models/` 新增一个子包（见下文「加新模型」）。
-
-## 目录约定
-
-根目录只放业务入口 py（cli.py / web.py）与工程文件；实现全部在 `src/`。
+本项目同时是「生成模型参考模板」：`ov/` 核心层与具体模型无关，加新生成模型
+只需在 `ov/models/` 新增一个子包（见下文「加新模型」）。
 
 ## 运行方式
 
@@ -25,36 +21,40 @@ uv run python cli.py --asr <ref.wav>
 
 # Web：http://localhost:38001
 uv run python web.py
+
+# 测试（stub 引擎，不加载真实模型 / 不联网）
+uv run pytest
 ```
 
 所有设置（语言、设备、输出目录、生成参数、Web 端口等）都是
-`src/settings.py` 顶部变量，同名环境变量可覆盖；CLI 不设额外启动参数，
+`ov/settings.py` 顶部变量，同名环境变量可覆盖；CLI 不设额外启动参数，
 只接受「引用哪个文件」。输出 wav 命名 `<文件名>.<unix时间戳>.wav`
 （同秒冲突自动递增），默认落盘在文本文件所在目录（CLI）或项目 `out/`（Web）。
 
 ## 架构
 
 ```
-cli.py / web.py（根目录薄入口）
-   -> src/tools/cli_main.py / src/tools/web_main.py（界面适配，只依赖 src.api）
-        -> src/api（统一门面：模型解析 / ASR 预转写 / 默认参数）
-             -> src/pipeline（编排：命名 / 落盘 / 长文本策略）
-                  -> src/models/<name>/engine.py（Engine 适配器）
+cli.py / web.py（薄入口）
+   -> tools/cli_main.py / tools/web_main.py（界面适配，只依赖 ov.api）
+        -> ov.api（统一门面：模型解析 / ASR 预转写 / 默认参数）
+             -> ov.pipeline（编排：命名 / 落盘 / 长文本策略）
+                  -> ov.models/<name>/engine.py（Engine 适配器）
                        -> native 引擎（GGUF 一次性子进程）
 ```
 
-- `src/`        模型无关核心：settings（顶部变量）、types（数据契约）、
+- `ov/`         模型无关核心：settings（顶部变量）、types（数据契约）、
                 model（ModelSpec + Engine 注册表）、pipeline、assets（HF 下载）、
                 audio/text（工具）、logs（纯文本日志）。
-- `src/models/` 具体模型包：`omnivoice`（TTS）、`sensevoice`（ASR）。
+- `ov/models/`  具体模型包：`omnivoice`（TTS）、`sensevoice`（ASR）。
 - `runtime/`    引擎产物目录（gitignore）：C++ 源码+编译、funasr 二进制。
 - `patches/`    需要维护的 C++ 定制（重 clone runtime 后 `git apply`）。
+- `tests/`      stub 引擎单测（注册表 / 编排 / 长文本 / 音频），不加载模型。
 
-数据契约集中在 `src/types.py`：SynthesizeRequest / TranscribeRequest /
+数据契约集中在 `ov/types.py`：SynthesizeRequest / TranscribeRequest /
 GenParams / EngineResult / Segment / SynthesisOutcome。引擎能力由
 ModelSpec.capabilities 声明（clone/design/auto/native_longform/transcribe…），
-长文本：有 native_longform 走引擎原生分块，否则 `src/pipeline` 用
-`src/text` 兜底逐段合成拼接（未来模型的模板路径）。
+长文本：有 native_longform 走引擎原生分块，否则 `ov/pipeline` 用
+`ov/text` 兜底逐段合成拼接（未来模型的模板路径）。
 
 模型管理规则：GGUF 权重一律经 HuggingFace（本地优先 + hf-mirror 兜底，
 `HF_LOCAL_FIRST=0` / `HF_NO_MIRROR_FALLBACK=1` 可调）；不硬编码缓存路径。
@@ -67,14 +67,14 @@ torch 做设备探测。
 
 ## 加新模型（模板用法）
 
-1. `src/models/<name>/` 下写 `spec.py`：ModelSpec(id/kind/capabilities/
+1. `ov/models/<name>/` 下写 `spec.py`：ModelSpec(id/kind/capabilities/
    supported_params/fallback_chunk_chars) + register()；声明资产与默认参数
-   （放 `src/settings.py` 顶部变量）。
+   （放 `ov/settings.py` 顶部变量）。
 2. 写 `engine.py`：实现 Engine 协议（provision / synthesize / transcribe），
    内部可用 subprocess 调 native 引擎，也可接任意 Python 推理库。
-3. 在 `src/models/__init__.py` import 一行完成注册。
-4. 无特殊需求的模型自动获得：CLI 模式、Web 参数面板、长文本兜底 ——
-   都不需要改核心层。
+3. 在 `ov/models/__init__.py` import 一行完成注册。
+4. 无特殊需求的模型自动获得：CLI 模式、Web 参数面板、长文本兜底、
+   单测框架 —— 都不需要改核心层。
 
 ## 常见问题
 

@@ -80,7 +80,7 @@ class SynthesisOutcome:
 
 
 class Engine(Protocol):
-    """引擎适配器协议（核心只依赖此形态；实现位于 src/models/<name>/）。
+    """引擎适配器协议（核心只依赖此形态；实现位于 ov/models/<name>/）。
 
     实现需保证可重入（Web 多会话并发调用），无后台常驻进程。
     """

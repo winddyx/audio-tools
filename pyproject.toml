@@ -7,6 +7,12 @@ dependencies = [
     "numpy",
     "soundfile",
     "huggingface_hub",
-    # Web 界面（设置见 src/settings.py 顶部变量）
+    # Web 界面（设置见 ov/settings.py 顶部变量）
     "gradio==6.24.0",
 ]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,8 +1,8 @@
 """模型注册：ModelSpec + 注册表。
 
 核心只认识 ModelSpec 与 Engine 协议，不认识任何具体模型。
-具体模型在 src/models/<name>/ 声明 spec 并 register()；src.models 包被
-导入一次即完成注册（入口经 src.api 引用，天然触发）。
+具体模型在 ov/models/<name>/ 声明 spec 并 register()；ov.models 包被
+导入一次即完成注册（入口经 ov.api 引用，天然触发）。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ class ModelSpec:
     id: str
     kind: str                          # "tts" / "asr" / 未来扩展
     description: str
-    capabilities: FrozenSet[str]       # 见 src/models/*/spec.py 注释
+    capabilities: FrozenSet[str]       # 见 ov/models/*/spec.py 注释
     supported_params: FrozenSet[str]   # GenParams 中本引擎支持的字段
     engine: Engine                     # 已实例化的引擎适配器（可重入、无状态）
     # 长文本兜底分块阈值：无 native_longform 能力时超过即逐段合成

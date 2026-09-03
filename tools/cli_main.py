@@ -1,7 +1,7 @@
 """CLI 入口：合成（默认）/ ASR 转写（--asr）。
 
 参数约定（项目规则）：除"引用哪个文件"外不设启动参数；语言、指令、
-次数、输出目录、设备等全部在 src/settings.py 顶部变量控制。
+次数、输出目录、设备等全部在 ov/settings.py 顶部变量控制。
 
 用法:
   uv run python cli.py <text.txt> [<ref.wav>]   # 合成（见模式判定）
@@ -18,7 +18,7 @@ import sys
 import time
 from typing import Optional
 
-from src import api, settings
+from ov import api, settings
 
 
 def _read_text_file(path: str) -> str:

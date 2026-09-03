@@ -1,4 +1,4 @@
-"""CLI 薄入口（实现见 src/tools/cli_main.py，设置见 src/settings.py 顶部变量）。
+"""CLI 薄入口（实现见 tools/cli_main.py，设置见 ov/settings.py 顶部变量）。
 
 用法:
   uv run python cli.py <text.txt> [<ref.wav>]   # 合成
@@ -7,7 +7,7 @@
 
 import sys
 
-from src.tools.cli_main import main
+from tools.cli_main import main
 
 if __name__ == "__main__":
     sys.exit(main())
