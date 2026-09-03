@@ -37,4 +37,4 @@ cli.py / web.py ──> src/pipeline.py ──> src/backends/gguf.py ──> omn
 - **设备**：自动检测 CUDA > XPU > MPS > CPU（`GGML_BACKEND` 映射 mps→MTL0、cuda→CUDA0）；后端初始化失败自动回退 CPU 重试一次。
 - **模型**：TTS 与 ASR 权重经 HuggingFace 下载到默认缓存，本地优先 + hf-mirror 兜底；已备好的机器可用 `OMNIVOICE_CPP_BIN` / `FUNASR_LLAMACPP_BIN` 直接指定二进制。
 
-> vendor C++ 改动（断句硬切分 + ABI v4 分块元数据 + `--chunks-out`）导出为项目根 `omnivoice-cpp.patch`；重 clone vendor 后 `git apply` 复用。
+> vendor C++ 改动（断句硬切分 + ABI v4 分块元数据 + `--chunks-out`）导出为 `patches/omnivoice-cpp.patch`；重 clone vendor 后 `git apply` 复用。
