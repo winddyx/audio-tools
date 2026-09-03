@@ -1,15 +1,16 @@
 """
 统一编排层：vc.py / web.py 共用的完整合成流程。
 
-synthesize(): ASR 转写（clone 且缺 ref_text 时）→ gguf.generate → 输出命名
-              → 写 WAV → SynthesisResult（含 out_path / 分段信息 / ASR 文本）。
+synthesize(): ASR 转写（clone 且缺 ref_text 时）→ TTS 模型 generate
+              （按 config.TTS_MODEL 分发 omnivoice / indextts2）→ 输出命名
+              → 写 WAV → SynthesisResult（含 out_path / ASR 文本）。
 draw():       连续合成 N 次（抽卡），返回结果列表。
 
 输出命名规则（唯一事实来源）：
     <out_dir>/<out_name>.<unix秒时间戳>.wav；同秒冲突时秒数递增。
 CLI 传文本文件名，Web 传启动时间戳（与旧行为兼容）。
 
-vc.py / web.py 不再直接调用后端 generate / ASR，统一走本模块。
+vc.py / web.py 不再直接调用模型 generate / ASR，统一走本模块。
 """
 
 from __future__ import annotations
@@ -22,9 +23,9 @@ from typing import Optional
 
 import numpy as np
 
-from .config import Config
-from .funasr import _transcribe_ref
-from .gguf import ChunkInfo, generate, _load_model as _gguf_load_model
+from .audiocpp import AudioResult, ChunkInfo
+from .config import Config, TTS_MODEL
+from .sensevoice import _transcribe_ref
 
 # 参考音频转写文本缓存（key: 绝对路径+大小+mtime+asr_model）
 # 同一参考音频在多轮抽卡间只转写一次
@@ -35,7 +36,7 @@ _ASR_TEXT_CACHE: dict[tuple, str] = {}
 class SynthesisResult:
     """一次完整合成的产物（音频 + 输出文件 + 元数据）。"""
 
-    audio: np.ndarray          # mono float32 PCM（24 kHz）
+    audio: np.ndarray          # mono float32 PCM（采样率随 TTS 模型而定）
     sampling_rate: int
     out_path: str              # 已写入的 WAV 文件绝对路径
     duration_sec: float
@@ -53,6 +54,20 @@ def _unique_out_path(out_dir: str, out_name: str) -> str:
     return path
 
 
+def _tts_generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
+    """按 cfg.tts_model（默认 TTS_MODEL）分发到模型核心 generate。"""
+    name = (cfg.tts_model or TTS_MODEL or "omnivoice").strip().lower()
+    if name in ("omnivoice", "omni"):
+        from .omnivoice import generate as _omni
+        return _omni(cfg, logger, **kwargs)
+    if name in ("indextts2", "indextts", "index_tts2", "indextts2.5", "index_tts2.5"):
+        from .indextts2 import generate as _it2
+        return _it2(cfg, logger, **kwargs)
+    raise ValueError(
+        f"未知 TTS_MODEL: {name}（支持 omnivoice / indextts2，"
+        "见 src/config.py 顶部 TTS_MODEL）")
+
+
 def synthesize(
     cfg: Config,
     logger: logging.Logger,
@@ -61,20 +76,16 @@ def synthesize(
     language: Optional[str] = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
-    instruct: Optional[str] = None,
     out_dir: str,
     out_name: str,
     gen_kwargs: Optional[dict] = None,
 ) -> SynthesisResult:
-    """一次完整合成：ASR（clone 且缺 ref_text）→ generate → 写 WAV。
+    """一次完整合成：ASR（clone 且缺 ref_text）→ TTS generate → 写 WAV。
 
     返回 SynthesisResult；输出 WAV 由本函数写入 out_dir/out_name 命名。
     ref_text 由调用方传入时不重复转写；缺省且需要时自动用 SenseVoice
     转写（结果记录在 result.ref_text，供 UI 展示）。
     """
-    # 唯一后端：GGUF（C++/GGML，src/gguf.py）。pipeline 不再经注册机制
-    model = _gguf_load_model(cfg, logger)
-
     asr_out = ""
     if ref_audio and not ref_text:
         # 参考音频转写缓存：同一音频（路径+大小+mtime+asr_model 均一致）只转写
@@ -87,21 +98,19 @@ def synthesize(
                os.path.abspath(asr_cfg.asr_model) if asr_cfg.asr_model else "")
         ref_text = _ASR_TEXT_CACHE.get(key)
         if ref_text is None:
-            logger.info("ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
+            logger.info("ref_text 未提供，用 SenseVoice 转写参考音频 …")
             ref_text = _transcribe_ref(asr_cfg, logger)
             if not ref_text:
                 raise ValueError("ASR 转写结果为空（参考音频可能为静音）")
             _ASR_TEXT_CACHE[key] = ref_text
         asr_out = ref_text
-        logger.info("参考文本: %s", ref_text)
 
-    result = generate(
+    result = _tts_generate(
         cfg, logger,
         text=text.strip(),
         language=language or None,
         ref_audio=ref_audio or None,
         ref_text=ref_text if ref_audio else None,
-        instruct=instruct or None,
         **(gen_kwargs or {}),
     )
 

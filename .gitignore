@@ -29,3 +29,6 @@ vendor/
 # 用户参考目录（MOSS 项目副本，仅参考不进仓库）
 MOSS-Transcribe-Diarize-link-folder/
 **/MOSS-Transcribe-Diarize-link-folder/
+
+# 本地测试素材（不进仓库）
+for test/

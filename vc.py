@@ -1,14 +1,14 @@
 """
-OmniVoice 配音工具 — CLI 入口（参考音频 + 文本文件 → WAV）
+audio-tools — CLI 入口（参考音频 + 文本文件 → WAV，语音克隆）
 
 用法:
-  uv run python vc.py <ref_audio.wav> <text.txt> -l yue        # 语音克隆
-  uv run python vc.py --text <text.txt> --instruct "female, low pitch, british accent"  # 声音设计
-  uv run python vc.py --text <text.txt>                       # 自动音色
-  uv run python vc.py --transcribe <ref_audio.wav>            # ASR 转写（校对/数据集用）
+  uv run python vc.py <ref_audio.wav> <text.txt>            # 语音克隆（自动 ASR 转写参考音频）
+  uv run python vc.py --transcribe <ref_audio.wav>          # ASR 转写（校对/数据集用）
 
-模型逻辑全部在 src/ 包（共享核心 + 推理后端），本文件只做参数解析、转写/生成
-流程编排与文件输出；后端默认 GGUF（BF16，设置见 src/config.py），Web 界面见 web.py。
+所有可调设置（语言 / 抽卡次数 / 输出目录 / TTS 模型 / 设备等）统一在
+src/config.py 顶部变量维护（同名环境变量可覆盖），CLI 只接受数据输入参数
+（引用哪个文件）。模型逻辑全部在 src/ 包，本文件只做参数解析、分阶段
+流程编排与输出汇总。
 """
 
 from __future__ import annotations
@@ -23,28 +23,22 @@ from typing import Optional
 
 from src import (
     Config,
-    get_best_device,
-    _gen_kwargs,
-    _load_model,
     _quiet_hf_logs,
-    _to_bool,
     _transcribe_ref,
 )
-
-# 推理后端只保留 GGUF（src/gguf.py：omnivoice.cpp + GGUF 权重）；
-# 可调设置统一在 src/config.py（GGUF 权重 / C++ 二进制 / ASR / Web 选项等）。
-# 合成流程统一走 src/pipeline.py（ASR → 后端 → 命名 → 写盘），本文件只做
-# 参数解析、进度显示与文件输出。
+from src.config import TTS_MODEL
 from src.pipeline import synthesize
+
+# 终端无多余装饰：分阶段 `[i/N]` + 关键信息，其余噪音由引擎层吞掉。
 
 
 def _run_transcribe(cfg: Config, logger: logging.Logger) -> None:
-    """ASR 子命令：用 SenseVoiceSmall-GGUF（llama.cpp runtime）转写参考音频并打印文本。
+    """ASR 子命令：用 SenseVoice 转写参考音频并打印文本。
 
-    不加载 TTS 模型，独立于主流程运行。
+    不加载任何 TTS 模型，独立于主流程运行。
     """
     logger.info("")
-    logger.info("[1/1] ASR 转写（SenseVoiceSmall-GGUF）")
+    logger.info("[1/1] ASR 转写（SenseVoice-Small，audiocpp sense_asr）")
     print(_transcribe_ref(cfg, logger))
 
 
@@ -52,134 +46,83 @@ def _run_transcribe(cfg: Config, logger: logging.Logger) -> None:
 
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    """解析命令行参数。"""
+    """解析命令行参数（仅数据输入：引用哪个文件；设置走 config 顶部变量）。"""
     parser = argparse.ArgumentParser(
-        description="OmniVoice 配音：600+ 语言零样本语音克隆 / 声音设计 / 自动音色"
+        description="audio-tools：语音克隆（audiocpp 引擎，支持多 TTS 模型）"
     )
     parser.add_argument(
         "ref_audio", nargs="?", default=None,
-        help="参考音频文件（语音克隆模式；省略时用 --instruct 声音设计或自动音色）",
+        help="参考音频文件（语音克隆模式必填）",
     )
     parser.add_argument(
         "text_file", nargs="?", default=None,
-        help="文本文件路径（声音设计/自动音色模式可用 --text 代替）",
-    )
-    parser.add_argument(
-        "--text", type=str, default=None,
-        help="文本文件路径（声音设计/自动音色模式使用，避免与参考音频位置参数歧义）",
-    )
-    parser.add_argument(
-        "--language", "-l", type=str, default=None,
-        help="合成语言代码/名称（如 en/zh/English；默认自动判断，可用 LANGUAGE 覆盖）",
-    )
-    parser.add_argument(
-        "--ref-text", type=str, default=None,
-        help="参考音频转写文本（省略时默认用 SenseVoiceSmall-GGUF 转写参考音频）",
-    )
-    parser.add_argument(
-        "--instruct", type=str, default=None,
-        help="声音设计指令，如 'female, low pitch, british accent'（无需参考音频）",
-    )
-    parser.add_argument(
-        "--draw-count", "-n", type=int, default=None,
-        help="生成次数（默认 2，可用 DRAW_COUNT 环境变量覆盖）",
-    )
-    parser.add_argument(
-        "--device", type=str, default=None,
-        help="设备：cuda/xpu/mps/cpu（默认自动检测；xpu 需安装 PyTorch xpu 构建）",
-    )
-    parser.add_argument(
-        "--output-dir", type=str, default=None,
-        help="输出目录（默认文本文件所在目录，可用 OUTPUT_DIR 覆盖）",
+        help="待合成文本文件路径（语音克隆模式必填）",
     )
     parser.add_argument(
         "--transcribe", action="store_true",
-        help="ASR 子命令：用 SenseVoiceSmall-GGUF 转写参考音频并打印文本（不生成 TTS）",
-    )
-    parser.add_argument(
-        "--asr-model", type=str, default=None,
-        help="本地 SenseVoice GGUF 文件路径（默认经 HF 下载 sensevoice-small-q8.gguf）",
-    )
-    parser.add_argument(
-        "--lang-sym", type=str, default=None,
-        help="ASR 语言代码（如 en/zh/yue/ja/ko）；留空则跟随 --language，再留空自动检测",
-    )
-    parser.add_argument(
-        "--region-sym", type=str, default=None,
-        help="（保留字段，SenseVoice 自动检测语言）",
+        help="ASR 子命令：用 SenseVoice 转写参考音频并打印文本（不生成 TTS）",
     )
     return parser.parse_args(argv)
 
 
-def _pick(cli_val, env_name: str, default, cast=None):
-    """按 CLI 参数 > 环境变量 > 默认值的优先级取值（空字符串视为未设置）。"""
-    v = cli_val if cli_val is not None else os.environ.get(env_name)
-    if v is None or v == "":
-        return default
-    return cast(v) if cast else v
-
-
-def _resolve_config(args: argparse.Namespace,
-                    defaults: Optional[Config] = None) -> Config:
-    """合并 CLI 参数 → 环境变量 → 默认值，返回有效的运行配置。"""
-    d = defaults or Config()
+def _resolve_config(args: argparse.Namespace) -> Config:
+    """按 CLI 数据输入 + config 顶部变量（含环境覆盖）构造运行配置。"""
+    from src.config import _env, _env_int
     cfg = Config(
-        ref_audio=_pick(args.ref_audio, "REF_AUDIO", d.ref_audio),
-        text_path=_pick(args.text_file or getattr(args, "text", None),
-                        "TEXT_PATH", d.text_path),
-        language=_pick(args.language, "LANGUAGE", d.language),
-        ref_text=_pick(args.ref_text, "REF_TEXT", d.ref_text),
-        instruct=_pick(args.instruct, "INSTRUCT", d.instruct),
-        draw_count=_pick(args.draw_count, "DRAW_COUNT", d.draw_count, int),
-        output_dir=_pick(args.output_dir, "OUTPUT_DIR", d.output_dir),
-        device=_pick(args.device, "DEVICE", d.device),
-        dtype=_pick(None, "DTYPE", d.dtype),
-        model_path=_pick(None, "MODEL_PATH", d.model_path),
-        model_id=_pick(None, "OMNIVOICE_MODEL_ID", d.model_id),
-        transcribe=bool(getattr(args, "transcribe", False))
-                   or _to_bool(os.environ.get("TRANSCRIBE", "")),
-        asr_model=_pick(getattr(args, "asr_model", None), "ASR_MODEL", d.asr_model),
-        asr_hub=_pick(None, "ASR_HUB", d.asr_hub),
-        asr_vad=_pick(None, "ASR_VAD", d.asr_vad),
-        asr_lang_sym=_pick(getattr(args, "lang_sym", None), "ASR_LANG_SYM", d.asr_lang_sym),
-        asr_region_sym=_pick(getattr(args, "region_sym", None), "ASR_REGION_SYM", d.asr_region_sym),
+        ref_audio=args.ref_audio or _env("REF_AUDIO", ""),
+        text_path=args.text_file or _env("TEXT_PATH", ""),
+        transcribe=args.transcribe or _env_bool_arg("TRANSCRIBE"),
     )
-    if not cfg.device:
-        cfg.device = get_best_device()
+    # 设置类字段：文件顶部变量 + 同名环境变量覆盖（见 src/config.py Config 注释）
+    if not cfg.transcribe:
+        _apply_shared_settings(cfg)
     return cfg
+
+
+def _env_bool_arg(name: str) -> bool:
+    from src.config import _to_bool
+    return _to_bool(os.environ.get(name, ""))
+
+
+def _apply_shared_settings(cfg: Config) -> None:
+    """把 config 顶部可调设置（语言/抽卡/输出/设备/模型）合入 cfg。
+
+    环境变量可覆盖文件默认值（与 Config 字段同名），vc/web 共用。
+    """
+    from src.config import _env, _env_int
+    cfg.language = _env("LANGUAGE", cfg.language)
+    cfg.ref_text = _env("REF_TEXT", cfg.ref_text)
+    cfg.draw_count = _env_int("DRAW_COUNT", cfg.draw_count)
+    cfg.output_dir = _env("OUTPUT_DIR", cfg.output_dir)
+    cfg.device = _env("DEVICE", cfg.device)
+    cfg.tts_model = _env("TTS_MODEL", TTS_MODEL)
+    cfg.asr_model = _env("ASR_MODEL", cfg.asr_model)
 
 
 def _validate_inputs(cfg: Config, logger: logging.Logger) -> None:
     """验证输入文件是否存在，不通过则退出进程。"""
     if cfg.draw_count < 1:
-        logger.error("DRAW_COUNT/--draw-count 必须 >= 1（当前 %d）", cfg.draw_count)
+        logger.error("DRAW_COUNT 必须 >= 1（当前 %d）", cfg.draw_count)
         sys.exit(1)
     if not cfg.text_path or not os.path.isfile(cfg.text_path):
         logger.error("请设置有效的文本文件路径")
         sys.exit(1)
-    if cfg.ref_audio and not os.path.isfile(cfg.ref_audio):
-        logger.error("参考音频不存在: %s", cfg.ref_audio)
+    if not cfg.ref_audio or not os.path.isfile(cfg.ref_audio):
+        logger.error("语音克隆需要有效的参考音频文件")
         sys.exit(1)
-    if not cfg.ref_audio and not cfg.instruct:
-        logger.info("未提供参考音频与指令，使用自动音色模式")
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     """
-    OmniVoice 配音入口（语音克隆 / 声音设计 / 自动音色）。
+    audio-tools CLI 入口（语音克隆 / ASR 转写子命令）。
 
     用法:
-      uv run python vc.py <ref_audio> <text_file>
-      uv run python vc.py <ref_audio> <text_file> --language en
-      uv run python vc.py --text <text_file> --instruct "female, low pitch, british accent"
-      uv run python vc.py --transcribe <ref_audio>                 # ASR（SenseVoiceSmall-GGUF）
-      uv run python vc.py --transcribe <ref_audio> --lang-sym en
-      DRAW_COUNT=3 LANGUAGE=yue uv run python vc.py /path/to/ref.wav /path/to/text.txt
+      uv run python vc.py <ref_audio.wav> <text.txt>
+      uv run python vc.py --transcribe <ref_audio.wav>
     """
-    logger = logging.getLogger("omni")
+    logger = logging.getLogger("audio-tools")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    # HF 相关第三方库（httpx/huggingface_hub 等）的 INFO 日志压到 WARNING，
-    # 保留 WARNING 及以上提示（如缺 HF_TOKEN）与业务日志
+    # HF 相关第三方库（httpx/huggingface_hub 等）的 INFO 日志压到 WARNING
     _quiet_hf_logs()
 
     try:
@@ -191,12 +134,12 @@ def main(argv: Optional[list[str]] = None) -> None:
             _run_transcribe(cfg, logger)
             return
 
-        mode = ("语音克隆" if cfg.ref_audio
-                else "声音设计" if cfg.instruct
-                else "自动音色")
-        logger.info("模式: %s  语言: %s  设备: %s  后端: gguf",
-                    mode, cfg.language or "自动", cfg.device)
+        if not cfg.device:
+            from src import get_best_device
+            cfg.device = get_best_device()
 
+        logger.info("语音克隆  TTS模型: %s  语言: %s  设备: %s",
+                    cfg.tts_model, cfg.language or "自动", cfg.device)
         _validate_inputs(cfg, logger)
 
         with open(cfg.text_path, encoding="utf-8") as f:
@@ -205,11 +148,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             logger.error("文本文件为空")
             sys.exit(1)
 
-        # 终端输出分阶段、跟随运行逻辑：
-        #   推理准备 → ASR 转写参考音频（克隆且缺 ref_text 时）→ 生成 → 输出
+        # ── 六阶段生成（环境/模型/输入/ASR/克隆/输出，vc 与 web 同构）──
         ref_text = cfg.ref_text
         need_asr = bool(cfg.ref_audio and not ref_text)
-        total_stages = 3 + (1 if need_asr else 0)
+        total_stages = 6
         stage_idx = 0
 
         def _section(title: str) -> None:
@@ -218,34 +160,44 @@ def main(argv: Optional[list[str]] = None) -> None:
             logger.info("")
             logger.info("[%d/%d] %s", stage_idx, total_stages, title)
 
-        # ── 阶段 1: 推理准备（编译二进制 + 定位 GGUF 权重，一次性，后续轮次走缓存）──
-        _section("推理准备")
-        _load_model(cfg, logger)
+        # 阶段 1: 环境准备（引擎二进制，一次性，后续轮次走缓存）
+        _section("环境准备")
+        from src.audiocpp import _ensure_binary
+        logger.info("  %s", os.path.basename(_ensure_binary(logger)))
 
-        # ── 阶段 2: ASR（SenseVoiceSmall-GGUF 转写参考音频）──
+        # 阶段 2: 模型准备（定位/下载 TTS 与 ASR 权重，缓存）
+        _section("模型准备")
+        _prepare_models(cfg, logger, need_asr=need_asr)
+
+        # 阶段 3: 输入文件检查（文本/参考音频/参数合法性）
+        _section("输入文件检查")
+        logger.info("  文本: %s", os.path.basename(cfg.text_path))
+        logger.info("  参考音频: %s", os.path.basename(cfg.ref_audio))
+
+        # 阶段 4: ASR（SenseVoice 转写参考音频；已提供 ref_text 则跳过）
+        _section("ASR 转写")
         if need_asr:
-            _section("ASR 转写")
-            logger.info("ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
+            logger.info("  ref_text 未提供，用 SenseVoice 转写参考音频 …")
             ref_text = _transcribe_ref(cfg, logger)
-            logger.info("参考文本: %s", ref_text)
             if not ref_text:
                 logger.error("ASR 转写结果为空（参考音频可能为静音）")
                 sys.exit(1)
+        else:
+            logger.info("  ref_text 已提供，跳过转写")
 
-        # ── 阶段 3: 生成（多轮抽卡）──
-        _section(f"{mode}生成")
+        # 阶段 5: VOICECLONE（多轮抽卡）
+        _section("VOICECLONE 生成")
         out_dir = (os.path.abspath(cfg.output_dir)
                    if cfg.output_dir
                    else os.path.dirname(os.path.abspath(cfg.text_path)))
         os.makedirs(out_dir, exist_ok=True)
         out_name = os.path.basename(cfg.text_path)
-        gen_kwargs = _gen_kwargs()
         results: list = []
 
         for draw in range(1, cfg.draw_count + 1):
             logger.info("  [第 %d/%d 次] 生成中 …", draw, cfg.draw_count)
-            # 后端无进度回调：后台线程每 10s 打一行耗时，避免长合成时终端
-            # 长时间无输出（只提示已用时，不伪造步进百分比）
+            # 引擎无进度回调：后台线程每 10s 打一行耗时，避免长合成时终端
+            # 长时间无输出
             stop = threading.Event()
 
             def _heartbeat() -> None:
@@ -262,15 +214,10 @@ def main(argv: Optional[list[str]] = None) -> None:
                     cfg, logger,
                     text=text,
                     language=cfg.language or None,
-                    ref_audio=cfg.ref_audio or None,
-                    # 克隆模式下 ref_text 已由用户提供或 SenseVoiceSmall-GGUF 转写
-                    # （保证非空非 None，模型内部不会走 Whisper 兜底）；
-                    # 声音设计/自动音色模式传 None
-                    ref_text=ref_text if cfg.ref_audio else None,
-                    instruct=cfg.instruct or None,
+                    ref_audio=cfg.ref_audio,
+                    ref_text=ref_text,
                     out_dir=out_dir,
                     out_name=out_name,
-                    gen_kwargs=gen_kwargs,
                 )
             finally:
                 stop.set()
@@ -282,23 +229,38 @@ def main(argv: Optional[list[str]] = None) -> None:
                         os.path.basename(result.out_path), kb,
                         result.duration_sec)
 
-        # ── 阶段 4: 输出汇总 ──
+        # 阶段 6: 输出文件规范（汇总清单）
         _section("输出")
         for r in results:
             logger.info("  %s", r.out_path)
         logger.info("共 %d 个文件，写入 %s", len(results), out_dir)
     except KeyboardInterrupt:
-        # 用户 Ctrl-C：合成子进程/心跳线程已由 finally 清理，这里只做干净收尾
-        # （不打印 traceback；手动中断属正常退出路径，非代码缺陷）
         logger.info("")
         logger.info("已手动中断，未完成的生成已放弃（已生成的文件已写入）")
         sys.exit(130)
     except Exception:
-        # cfg 可能尚未赋值（_parse_args/_resolve_config 阶段抛错）——用局部变量兜底
         cfg = locals().get("cfg")
         logger.exception("%s失败",
                          "转写" if getattr(cfg, "transcribe", False) else "生成")
         sys.exit(1)
+
+
+def _prepare_models(cfg: Config, logger: logging.Logger, *, need_asr: bool) -> None:
+    """模型准备：定位/下载 TTS 模型（与 ASR 模型若需要）GGUF。"""
+    tts_name = (cfg.tts_model or "omnivoice").strip().lower()
+    if tts_name in ("omnivoice", "omni"):
+        from src.omnivoice import _ensure_model as _m
+    elif tts_name.startswith("indextts"):
+        from src.indextts2 import _ensure_model as _m
+    else:
+        logger.warning("  未知 TTS_MODEL %s，跳过模型准备", tts_name)
+        return
+    path = _m(logger)
+    logger.info("  TTS 模型(%s): %s", tts_name, os.path.basename(path))
+    if need_asr:
+        from src.sensevoice import _ensure_model as _a
+        apath = _a(logger)
+        logger.info("  ASR 模型: %s", os.path.basename(apath))
 
 
 if __name__ == "__main__":
