@@ -63,7 +63,7 @@ def _asr_binary(logger: logging.Logger) -> str:
             "未找到 llama-funasr-sensevoice 二进制；可手动下载 FunASR "
             "GitHub Releases（tag v1.4.3，funasr-llamacpp-*）解压后，用 "
             "FUNASR_LLAMACPP_BIN 指向它")
-    logger.info("⏳ 下载 FunASR llama.cpp runtime（%s）…", asset["name"])
+    logger.info("下载 FunASR llama.cpp runtime（%s）…", asset["name"])
     url = ("https://github.com/modelscope/FunASR/releases/download/"
            f"v1.4.3/{asset['name']}")
     os.makedirs(vendor_dir, exist_ok=True)
@@ -83,7 +83,7 @@ def _asr_binary(logger: logging.Logger) -> str:
         raise RuntimeError(
             f"解压后未找到 {bin_path}；可手动设置 FUNASR_LLAMACPP_BIN 指定二进制")
     _ASR_BIN_CACHE = bin_path
-    logger.info("✓ llama-funasr-sensevoice 就绪: %s", bin_path)
+    logger.info("llama-funasr-sensevoice 就绪: %s", bin_path)
     return _ASR_BIN_CACHE
 
 
@@ -106,11 +106,11 @@ def _ensure_gguf(logger: logging.Logger) -> tuple[str, str]:
     global _ASR_GGUF_CACHE
     if _ASR_GGUF_CACHE:
         return _ASR_GGUF_CACHE
-    logger.info("⏳ 定位 SenseVoiceSmall-GGUF（%s，本地优先）…", ASR_GGUF_REPO)
+    logger.info("定位 SenseVoiceSmall-GGUF（%s，本地优先）…", ASR_GGUF_REPO)
     t0 = time.time()
     model = _hf_download(ASR_GGUF_REPO, ASR_GGUF_BASE)
     vad = _hf_download(ASR_VAD_REPO, ASR_VAD_BASE)
-    logger.info("✓ ASR GGUF 就绪: %.1fs\n  model: %s\n  vad  : %s",
+    logger.info("ASR GGUF 就绪: %.1fs\n  model: %s\n  vad  : %s",
                 time.time() - t0, model, vad)
     _ASR_GGUF_CACHE = (model, vad)
     return _ASR_GGUF_CACHE
@@ -136,7 +136,7 @@ def _transcribe_ref(cfg: Config, logger: logging.Logger) -> str:
 
     binary = _asr_binary(logger)
     cmd = [binary, "-m", model, "--vad", vad, "-a", cfg.ref_audio]
-    logger.info("⏳ 转写中（SenseVoice GGUF Q8_0）…")
+    logger.info("转写中（SenseVoice GGUF Q8_0）…")
     t0 = time.time()
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -144,5 +144,5 @@ def _transcribe_ref(cfg: Config, logger: logging.Logger) -> str:
             "llama-funasr-sensevoice 转写失败（退出码 %d）\n%s"
             % (proc.returncode, (proc.stderr or proc.stdout).strip()[-800:]))
     text = (proc.stdout or "").strip()
-    logger.info("✓ 转写完成: %.1fs", time.time() - t0)
+    logger.info("转写完成: %.1fs", time.time() - t0)
     return text

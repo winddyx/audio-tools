@@ -1,7 +1,7 @@
 """
-统一编排层：cli.py / web.py 共用的完整合成流程。
+统一编排层：vc.py / web.py 共用的完整合成流程。
 
-synthesize(): ASR 转写（clone 且缺 ref_text 时）→ 后端 generate → 输出命名
+synthesize(): ASR 转写（clone 且缺 ref_text 时）→ gguf.generate → 输出命名
               → 写 WAV → SynthesisResult（含 out_path / 分段信息 / ASR 文本）。
 draw():       连续合成 N 次（抽卡），返回结果列表。
 
@@ -9,7 +9,7 @@ draw():       连续合成 N 次（抽卡），返回结果列表。
     <out_dir>/<out_name>.<unix秒时间戳>.wav；同秒冲突时秒数递增。
 CLI 传文本文件名，Web 传启动时间戳（与旧行为兼容）。
 
-cli.py / web.py 不再直接调用后端 generate / ASR，统一走本模块。
+vc.py / web.py 不再直接调用后端 generate / ASR，统一走本模块。
 """
 
 from __future__ import annotations
@@ -22,10 +22,9 @@ from typing import Optional
 
 import numpy as np
 
-from .asr import _transcribe_ref
-from .backends import get_backend
-from .backends.protocol import ChunkInfo
 from .config import Config
+from .funasr import _transcribe_ref
+from .gguf import ChunkInfo, generate, _load_model as _gguf_load_model
 
 
 @dataclass
@@ -62,7 +61,6 @@ def synthesize(
     out_dir: str,
     out_name: str,
     gen_kwargs: Optional[dict] = None,
-    backend_name: str = "gguf",
 ) -> SynthesisResult:
     """一次完整合成：ASR（clone 且缺 ref_text）→ generate → 写 WAV。
 
@@ -70,21 +68,21 @@ def synthesize(
     ref_text 由调用方传入时不重复转写；缺省且需要时自动用 SenseVoice
     转写（结果记录在 result.ref_text，供 UI 展示）。
     """
-    backend = get_backend(backend_name)
-    model = backend._load_model(cfg, logger)
+    # 唯一后端：GGUF（C++/GGML，src/gguf.py）。pipeline 不再经注册机制
+    model = _gguf_load_model(cfg, logger)
 
     asr_out = ""
     if ref_audio and not ref_text:
-        logger.info("ℹ️ ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
+        logger.info("ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
         # ASR 只用到 cfg.ref_audio / asr_model，单独构造避免污染调用方配置
         asr_cfg = replace(cfg, ref_audio=ref_audio)
         ref_text = _transcribe_ref(asr_cfg, logger)
         asr_out = ref_text
-        logger.info("📝 参考文本: %s", ref_text)
+        logger.info("参考文本: %s", ref_text)
         if not ref_text:
             raise ValueError("ASR 转写结果为空（参考音频可能为静音）")
 
-    result = backend.generate(
+    result = generate(
         cfg, logger,
         text=text.strip(),
         language=language or None,

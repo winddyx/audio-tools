@@ -1,29 +1,39 @@
 """
 OmniVoice 配音工具 — 核心包（src/）
 
-共享核心（与推理后端无关）：
-- config：Config 数据类 + _to_bool + 全局可调设置（GGUF/ASR/Web，环境变量可覆盖）
-- logs：HF 相关第三方库日志降噪（_quiet_hf_logs）
-- device：设备检测与容错（get_best_device / mps、xpu 回退 CPU）
+平铺模块布局（无子包、无后端注册机制）：
+- config：唯一设置源（Config 数据类 + 顶部可调变量 + 设备检测 + 日志压噪）
 - hf：HuggingFace 下载与缓存管理（本地优先 + hf-mirror 兜底）
-- params：生成参数环境变量映射（_GEN_PARAM_ENVS / _gen_kwargs）
-- asr：参考音频转写（SenseVoiceSmall-GGUF，FunASR llama.cpp runtime）
+- funasr：参考音频转写（SenseVoiceSmall-GGUF，FunASR llama.cpp runtime）
+- omni：生成参数环境变量映射（_GEN_PARAM_ENVS / _gen_kwargs）+ Web 语言表
+  （LANG_NAME_TO_ID）+ 旧 `from omni import ...` 兼容导出面
+- pipeline：统一编排 synthesize()/draw()（ASR → gguf.generate → 命名 → 写盘）
+- gguf：唯一推理后端（C++/GGML，omnivoice.cpp + Serveurperso/OmniVoice-GGUF）
 
-推理后端（backends/，只保留 GGUF）：
-- backends.gguf：C++/GGML（omnivoice.cpp，Serveurperso/OmniVoice-GGUF）
-
-旧入口 omni.py 现为兼容 shim，聚合导出共享核心与 GGUF 后端。
+入口：vc.py（CLI）、web.py（Gradio Web），共用 src/。
 """
 
-from .backends import BACKEND_IDS, get_backend
-from .config import Config, _to_bool
-from .device import get_best_device
-from .logs import _quiet_hf_logs
-from .params import _GEN_PARAM_ENVS, _gen_kwargs
-from .asr import _transcribe_ref
+from .config import (
+    Config,
+    _quiet_hf_logs,
+    _to_bool,
+    get_best_device,
+)
+from .funasr import _transcribe_ref
+from .gguf import generate
+from .gguf import _load_model as _load_model
+from .hf import _HF_MIRROR, _hf_download, _switch_hf_endpoint, resolve_path
+from .omni import (
+    LANG_NAME_TO_ID,
+    _GEN_PARAM_ENVS,
+    _gen_kwargs,
+    lang_display_name,
+)
 
 __all__ = [
     "Config", "_to_bool", "_quiet_hf_logs", "get_best_device",
-    "_GEN_PARAM_ENVS", "_gen_kwargs", "_transcribe_ref",
-    "get_backend", "BACKEND_IDS",
+    "_transcribe_ref", "generate", "_load_model",
+    "_HF_MIRROR", "_hf_download", "_switch_hf_endpoint", "resolve_path",
+    "_GEN_PARAM_ENVS", "_gen_kwargs",
+    "LANG_NAME_TO_ID", "lang_display_name",
 ]

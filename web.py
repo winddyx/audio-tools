@@ -5,8 +5,8 @@ OmniVoice Web Demo — Gradio 交互界面（基于官方 gradio 模板）
 模型加载 / 路径解析 / ASR 转写 / 生成参数 全部复用 src/ 包（共享核心
 + GGUF 推理后端；本文件只做 UI 封装）：
 - 模型加载: gguf 后端 _load_model()（编译 omnivoice.cpp + 下载 GGUF 权重）
-- 参考文本转写: src.asr._transcribe_ref()（SenseVoiceSmall-GGUF，llama.cpp runtime）
-- 生成参数: 参数名与 src.params._GEN_PARAM_ENVS 完全一致
+- 参考文本转写: src.funasr._transcribe_ref()（SenseVoiceSmall-GGUF，llama.cpp runtime）
+- 生成参数: 参数名与 src.omni._GEN_PARAM_ENVS 完全一致
 
 用法:
     uv run python web.py
@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 import gradio as gr
 import gradio.processing_utils as _gradio_proc
 
-from src.lang_map import LANG_NAME_TO_ID, lang_display_name
+from src.omni import LANG_NAME_TO_ID, lang_display_name
 
 # 共享核心与推理后端全部在 src/ 包
 from src import (
@@ -37,11 +37,11 @@ from src import (
     _GEN_PARAM_ENVS,
 )
 
-# 推理后端只保留 GGUF（src/backends/gguf.py）；可调设置统一在 src/config.py
+# 推理后端只保留 GGUF（src/gguf.py）；可调设置统一在 src/config.py
 # （GGUF 权重 / C++ 二进制 / ASR / Web 选项等）
 from src.config import WEB_AUTO_OPEN_BROWSER, WEB_IP, WEB_PORT
 # 合成流程统一走 src/pipeline.py；_load_model 仅用于启动预热（常驻 serve 预热）
-from src.backends.gguf import _load_model
+from src.gguf import _load_model
 from src.pipeline import synthesize
 
 logger = logging.getLogger("omnivoice-web")
@@ -163,8 +163,8 @@ _ATTR_INFO = {
 }
 
 
-# ── 生成参数（复用 src.params 的参数名，与 CLI 环境变量完全一致）──
-# 从 src.params._GEN_PARAM_ENVS 派生：env 名 → (generate 参数名, cast)
+
+# 从 src.omni._GEN_PARAM_ENVS 派生：env 名 → (generate 参数名, cast)
 _WEB_PARAMS = {
     "num_step": ("推理步数 Inference Steps",
                  dict(minimum=4, maximum=64, step=1, value=32),
@@ -192,7 +192,7 @@ def _gen_kwargs_from_ui(ui: Dict[str, Any]) -> Dict[str, Any]:
 
     只透传用户显式设置/调整过的项，其余交给后端默认值——
     与 cli.py 的 _gen_kwargs() 语义一致（参数名取自 _GEN_PARAM_ENVS；
-    GGUF 后端只消费其中支持的子集，见 src/backends/gguf.py）。
+    GGUF 后端只消费其中支持的子集，见 src/gguf.py）。
     """
     kw: Dict[str, Any] = {}
     for env, (param, cast) in _GEN_PARAM_ENVS.items():
@@ -253,19 +253,19 @@ def build_demo() -> gr.Blocks:
 
         if result.ref_text:
             # ASR 识别的参考文本同步打到终端（与 cli.py 一致，方便校对）
-            logger.info("📝 参考文本: %s", result.ref_text)
+            logger.info("参考文本: %s", result.ref_text)
         # 返回文件路径而非 (sr, data) 元组：路径分支让 gradio 以文件 basename
         # （unix 时间戳）作为下载文件名；gradio 对路径的 ffprobe 可播放性探测
         # 已由 _patch_gradio_audio_probe() 兜底（ffprobe 缺失时视为可播放），
         # Windows 常见"有 ffmpeg 无 ffprobe"不再抛 FFExecutableNotFoundError。
-        return result.out_path, "生成完成 ✓", result.ref_text
+        return result.out_path, "生成完成", result.ref_text
 
     # ── 主题与样式（gradio 6: 传参到 launch()，不传 Blocks 构造器）────
 
     # 关闭 gradio 分析上报（避免无谓的联网）
     with gr.Blocks(title="OmniVoice Web Demo", analytics_enabled=False) as demo:
         gr.Markdown(
-            "# 🎤 OmniVoice Web Demo\n"
+            "# OmniVoice Web Demo\n"
             "基于 OmniVoice 的语音合成演示 — 支持语音克隆与音色设计。"
         )
 
@@ -421,7 +421,7 @@ def build_demo() -> gr.Blocks:
                             for i in range(_MAX_DRAWS)
                         ]
                         return (*slots, gr.update(value=asr_text),
-                                f"生成完成 ✓ 共 {draw_count} 个结果")
+                                f"生成完成 共 {draw_count} 个结果")
 
                     clone_btn.click(
                         _clone_fn,
@@ -570,7 +570,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     demo = build_demo()
     url = f"http://localhost:{args.port}"
-    logger.info("启动 Web 界面 → %s", url)
+    logger.info("启动 Web 界面: %s", url)
     demo.queue().launch(
         server_name=args.ip,
         server_port=args.port,

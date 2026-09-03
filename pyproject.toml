@@ -18,12 +18,6 @@ dependencies = [
     "torchaudio==2.11.0; sys_platform == 'darwin'",
 ]
 
-[dependency-groups]
-dev = ["pytest"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-
 # ── Intel oneAPI (Arc GPU) 加速 ───────────────────────────
 # torch/torchaudio 从 PyTorch 官方 xpu index 安装（torch 2.11.0+xpu，自带
 # oneAPI/SYCL 运行时，Windows 上驱动 Arc 显卡）；无 Intel GPU 的机器删除

@@ -2,7 +2,7 @@
 GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
 + Serveurperso/OmniVoice-GGUF BF16 权重。
 
-项目唯一推理后端（transformers 后端已移除），接口（见 backends/protocol.py）：
+项目唯一推理后端（transformers 后端已移除），接口（本文件内定义）：
 
     _load_model(cfg, logger) → 句柄（.sampling_rate = 24000）
     generate(cfg, logger, **kwargs) → AudioResult（音频 + 分块元数据）
@@ -25,7 +25,7 @@ GGUF 推理后端：C++/GGML 移植版（ServeurpersoCom/omnivoice.cpp）
   可在 src/config.py 用 GGUF_BASE / GGUF_CODEC 切回 Q8_0 等变体）。
 
 以上可调项统一在 src/config.py 中维护，同名环境变量可运行时覆盖。
-参考音频转写（ref_text）复用 src/asr.py 的 SenseVoiceSmall-GGUF，与 TTS 模型无关。
+参考音频转写（ref_text）复用 src/funasr.py 的 SenseVoiceSmall-GGUF，与 TTS 模型无关。
 """
 
 from __future__ import annotations
@@ -38,8 +38,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
-from ..config import (
+import numpy as np
+
+from .config import (
     CPP_BIN,
     CPP_BUILD_ARGS,
     CPP_SRC,
@@ -49,17 +53,51 @@ from ..config import (
     GGUF_DEBUG,
     GGUF_REPO,
 )
-from ..hf import _hf_download
-from .protocol import AudioResult, ChunkInfo
+from .hf import _hf_download
+
+
+@dataclass(frozen=True)
+class ChunkInfo:
+    """一段合成文本。
+
+    由 C++ 分块器（text-chunker.h）给出的分段结果：句末标点 + 换行等规则
+    切出的每一块。single-shot 路径下为整篇文本单块。按段重生成时直接取
+    text 重新调用即可。
+    """
+
+    text: str
+
+
+@dataclass
+class AudioResult:
+    """一次合成的完整结果（音频 + 元数据）。"""
+
+    audio: np.ndarray  # mono float32 PCM
+    sampling_rate: int
+    chunks: list[ChunkInfo] = field(default_factory=list)
+
+
+class ModelHandle(Protocol):
+    """模型句柄的最小契约（各后端实现可附带额外字段）。"""
+
+    sampling_rate: int
+
+
+class Backend(Protocol):
+    """后端模块的接口形态（供类型标注与测试替身参考）。"""
+
+    def _load_model(self, cfg: Any, logger: Any) -> ModelHandle: ...
+
+    def generate(self, cfg: Any, logger: Any, **kwargs: Any) -> AudioResult: ...
+
 
 # 上游仓库固定地址（非可调设置，仅在自动 clone 时使用）
 _CPP_REPO = "https://github.com/ServeurpersoCom/omnivoice.cpp.git"
 
 _SAMPLING_RATE = 24000  # omnivoice.cpp 输出固定 24 kHz mono
 
-# 项目根 = src/backends/gguf.py → src/backends → src → 项目根
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
+# 项目根 = src/gguf.py → src → 项目根
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _VENDOR_DIR = os.path.join(_PROJECT_ROOT, "vendor")
 _CPP_SRC_DEFAULT = os.path.join(_VENDOR_DIR, "omnivoice.cpp")
 _TMP_DIR = os.path.join(_PROJECT_ROOT, ".tmp")
@@ -124,11 +162,11 @@ def _ensure_gguf(logger: logging.Logger) -> tuple[str, str]:
     global _GGUF_CACHE
     if _GGUF_CACHE:
         return _GGUF_CACHE
-    logger.info("⏳ 定位 GGUF 权重（%s，本地优先）…", GGUF_REPO)
+    logger.info("定位 GGUF 权重（%s，本地优先）…", GGUF_REPO)
     t0 = time.time()
     base = _hf_download(GGUF_REPO, GGUF_BASE)
     codec = _hf_download(GGUF_REPO, GGUF_CODEC)
-    logger.info("✓ GGUF 就绪: %.1fs\n  base : %s\n  codec: %s",
+    logger.info("GGUF 就绪: %.1fs\n  base : %s\n  codec: %s",
                 time.time() - t0, base, codec)
     _GGUF_CACHE = (base, codec)
     return _GGUF_CACHE
@@ -165,21 +203,21 @@ def _ensure_binary(logger: logging.Logger) -> str:
     if _BINARY_CACHE:
         return _BINARY_CACHE
     if CPP_BIN and os.path.isfile(CPP_BIN):
-        logger.info("✓ 使用 OMNIVOICE_CPP_BIN: %s", CPP_BIN)
+        logger.info("使用 OMNIVOICE_CPP_BIN: %s", CPP_BIN)
         _BINARY_CACHE = CPP_BIN
         return _BINARY_CACHE
     built = _built_binary()
     if os.path.isfile(built):
         _BINARY_CACHE = built
         return _BINARY_CACHE
-    logger.info("⏳ 未找到 omnivoice-tts 二进制，clone + 编译 omnivoice.cpp"
+    logger.info("未找到 omnivoice-tts 二进制，clone + 编译 omnivoice.cpp"
                 "（首次约 10-20 分钟，产物在项目内 vendor/，gitignore）…")
     if not os.path.isdir(_cpp_src_dir()):
         _clone_cpp(logger)
     _build_cpp(logger)
     if not os.path.isfile(built):
         raise RuntimeError(f"omnivoice.cpp 编译失败：未生成 {built}")
-    logger.info("✓ omnivoice-tts 就绪: %s", built)
+    logger.info("omnivoice-tts 就绪: %s", built)
     _BINARY_CACHE = built
     return _BINARY_CACHE
 
@@ -218,7 +256,7 @@ def _gen_kwargs_to_cli(kwargs: dict, logger: logging.Logger) -> list[str]:
                  "audio_chunk_threshold", "duration"}
     unsupported = set(kwargs) - supported
     if unsupported:
-        logger.info("ℹ️ GGUF 后端不支持以下生成参数，已忽略: %s",
+        logger.info("GGUF 后端不支持以下生成参数，已忽略: %s",
                     ", ".join(sorted(unsupported)))
     return cli
 
@@ -262,7 +300,7 @@ def _load_model(cfg: Config, logger: logging.Logger) -> _ModelHandle:
     handle = _ModelHandle(binary, base, codec)
     _HANDLE_CACHE = handle
     if first_call:
-        logger.info("✓ GGUF 后端就绪（%s，%d Hz，设备 %s）",
+        logger.info("GGUF 后端就绪（%s，%d Hz，设备 %s）",
                     os.path.basename(base).replace("omnivoice-base-", "").replace(".gguf", ""),
                     _SAMPLING_RATE, cfg.device or "auto")
     return handle
@@ -272,7 +310,7 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
     """调用 omnivoice-tts 生成音频，返回 AudioResult（音频 + 分块元数据）。
 
     kwargs 支持：text / language / ref_audio / ref_text / instruct，
-    以及 src/params.py 中 GGUF 支持的生成参数子集（num_step / denoise /
+    以及 src/omni.py 中 GGUF 支持的生成参数子集（num_step / denoise /
     audio_chunk_duration / audio_chunk_threshold / duration）。
 
     进程模型：每次生成新起一次性 subprocess（模型随之加载），退出即清理，
@@ -320,7 +358,7 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
         if backend:
             env["GGML_BACKEND"] = backend
 
-        logger.info("  ⏳ omnivoice-tts 生成中（%s）…", backend or "设备自动选择")
+        logger.info("  omnivoice-tts 生成中（%s）…", backend or "设备自动选择")
         t0 = time.time()
         payload = (text or "").encode("utf-8")
         # 捕获 stderr：默认静默（ggml 内核编译 / [MaskGIT-Step] 步进等噪音全部
@@ -332,7 +370,7 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
         if (rc.returncode != 0 and backend and backend != "CPU"
                 and _backend_init_failed(rc.stderr)):
             # 后端初始化失败（设备名无效/无可用后端）→ 警告并回退 CPU 重试一次
-            logger.warning("⚠️ %s 初始化失败（退出码 %d），改用 CPU 重试 …",
+            logger.warning("%s 初始化失败（退出码 %d），改用 CPU 重试 …",
                            backend, rc.returncode)
             env["GGML_BACKEND"] = "CPU"
             rc = subprocess.run(cmd, input=payload, env=env,
@@ -351,7 +389,7 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
         import soundfile as sf
         data, sr = sf.read(out_wav, dtype="float32", always_2d=False)
         chunks = _read_chunks_sidecar(chunks_out)
-        logger.info("✓ 生成完成: %.1fs（%d Hz，%.1f s 音频，%d 段）",
+        logger.info("生成完成: %.1fs（%d Hz，%.1f s 音频，%d 段）",
                     time.time() - t0, sr, len(data) / sr, len(chunks))
         return AudioResult(audio=data, sampling_rate=sr, chunks=chunks)
     finally:

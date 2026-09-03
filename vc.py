@@ -1,11 +1,11 @@
 """
-OmniVoice 配音工具 — CLI 入口（文本文件 → WAV）
+OmniVoice 配音工具 — CLI 入口（参考音频 + 文本文件 → WAV）
 
 用法:
-  uv run python cli.py <ref_audio.wav> <text.txt> -l yue        # 语音克隆
-  uv run python cli.py --text <text.txt> --instruct "female, low pitch, british accent"  # 声音设计
-  uv run python cli.py --text <text.txt>                       # 自动音色
-  uv run python cli.py --transcribe <ref_audio.wav>            # ASR 转写（校对/数据集用）
+  uv run python vc.py <ref_audio.wav> <text.txt> -l yue        # 语音克隆
+  uv run python vc.py --text <text.txt> --instruct "female, low pitch, british accent"  # 声音设计
+  uv run python vc.py --text <text.txt>                       # 自动音色
+  uv run python vc.py --transcribe <ref_audio.wav>            # ASR 转写（校对/数据集用）
 
 模型逻辑全部在 src/ 包（共享核心 + 推理后端），本文件只做参数解析、转写/生成
 流程编排与文件输出；后端默认 GGUF（BF16，设置见 src/config.py），Web 界面见 web.py。
@@ -30,7 +30,7 @@ from src import (
     _transcribe_ref,
 )
 
-# 推理后端只保留 GGUF（src/backends/gguf.py：omnivoice.cpp + GGUF 权重）；
+# 推理后端只保留 GGUF（src/gguf.py：omnivoice.cpp + GGUF 权重）；
 # 可调设置统一在 src/config.py（GGUF 权重 / C++ 二进制 / ASR / Web 选项等）。
 # 合成流程统一走 src/pipeline.py（ASR → 后端 → 命名 → 写盘），本文件只做
 # 参数解析、进度显示与文件输出。
@@ -149,16 +149,16 @@ def _resolve_config(args: argparse.Namespace,
 def _validate_inputs(cfg: Config, logger: logging.Logger) -> None:
     """验证输入文件是否存在，不通过则退出进程。"""
     if cfg.draw_count < 1:
-        logger.error("❌ DRAW_COUNT/--draw-count 必须 >= 1（当前 %d）", cfg.draw_count)
+        logger.error("DRAW_COUNT/--draw-count 必须 >= 1（当前 %d）", cfg.draw_count)
         sys.exit(1)
     if not cfg.text_path or not os.path.isfile(cfg.text_path):
-        logger.error("❌ 请设置有效的文本文件路径")
+        logger.error("请设置有效的文本文件路径")
         sys.exit(1)
     if cfg.ref_audio and not os.path.isfile(cfg.ref_audio):
-        logger.error("❌ 参考音频不存在: %s", cfg.ref_audio)
+        logger.error("参考音频不存在: %s", cfg.ref_audio)
         sys.exit(1)
     if not cfg.ref_audio and not cfg.instruct:
-        logger.info("ℹ️ 未提供参考音频与指令，使用自动音色模式")
+        logger.info("未提供参考音频与指令，使用自动音色模式")
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -166,12 +166,12 @@ def main(argv: Optional[list[str]] = None) -> None:
     OmniVoice 配音入口（语音克隆 / 声音设计 / 自动音色）。
 
     用法:
-      uv run python cli.py <ref_audio> <text_file>
-      uv run python cli.py <ref_audio> <text_file> --language en
-      uv run python cli.py --text <text_file> --instruct "female, low pitch, british accent"
-      uv run python cli.py --transcribe <ref_audio>                 # ASR（SenseVoiceSmall-GGUF）
-      uv run python cli.py --transcribe <ref_audio> --lang-sym en
-      DRAW_COUNT=3 LANGUAGE=yue uv run python cli.py /path/to/ref.wav /path/to/text.txt
+      uv run python vc.py <ref_audio> <text_file>
+      uv run python vc.py <ref_audio> <text_file> --language en
+      uv run python vc.py --text <text_file> --instruct "female, low pitch, british accent"
+      uv run python vc.py --transcribe <ref_audio>                 # ASR（SenseVoiceSmall-GGUF）
+      uv run python vc.py --transcribe <ref_audio> --lang-sym en
+      DRAW_COUNT=3 LANGUAGE=yue uv run python vc.py /path/to/ref.wav /path/to/text.txt
     """
     logger = logging.getLogger("omni")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -191,7 +191,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         mode = ("语音克隆" if cfg.ref_audio
                 else "声音设计" if cfg.instruct
                 else "自动音色")
-        logger.info("🌐 模式: %s  语言: %s  设备: %s  后端: gguf",
+        logger.info("模式: %s  语言: %s  设备: %s  后端: gguf",
                     mode, cfg.language or "自动", cfg.device)
 
         _validate_inputs(cfg, logger)
@@ -199,7 +199,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         with open(cfg.text_path, encoding="utf-8") as f:
             text = f.read().strip()
         if not text:
-            logger.error("❌ 文本文件为空")
+            logger.error("文本文件为空")
             sys.exit(1)
 
         # 参考音频直接交给模型处理（模型内部自行加载/重采样/转单声道，
@@ -207,11 +207,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         # （不依赖 OmniVoice 内部 Whisper ASR）。转写只做一次，多轮抽卡复用
         ref_text = cfg.ref_text
         if cfg.ref_audio and not ref_text:
-            logger.info("ℹ️ ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
+            logger.info("ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
             ref_text = _transcribe_ref(cfg, logger)
-            logger.info("📝 参考文本: %s", ref_text)
+            logger.info("参考文本: %s", ref_text)
             if not ref_text:
-                logger.error("❌ ASR 转写结果为空（参考音频可能为静音）")
+                logger.error("ASR 转写结果为空（参考音频可能为静音）")
                 sys.exit(1)
 
         # ── 多轮生成 ──
@@ -236,7 +236,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 t0 = time.time()
                 while not stop.is_set():
                     pbar.set_description_str(
-                        f"  ⏳ 生成中 [{draw}/{cfg.draw_count}] "
+                        f"  生成中 [{draw}/{cfg.draw_count}] "
                         f"{time.time() - t0:.1f}s")
                     pbar.refresh()
                     time.sleep(0.1)
@@ -270,7 +270,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     except Exception:
         # cfg 可能尚未赋值（_parse_args/_resolve_config 阶段抛错）——用局部变量兜底
         cfg = locals().get("cfg")
-        logger.exception("❌ %s失败",
+        logger.exception("%s失败",
                          "转写" if getattr(cfg, "transcribe", False) else "生成")
         sys.exit(1)
 

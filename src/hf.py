@@ -80,7 +80,7 @@ def _hf_download(repo_id: str, filename: str = "") -> str:
             path = ""  # 未命中/快照不完整，走联网下载
         if path:
             logging.getLogger("omni").info(
-                "✅ 本地已有模型，跳过联网: %s", repo_id)
+                "本地已有模型，跳过联网: %s", repo_id)
             return path
 
     try:
@@ -90,13 +90,13 @@ def _hf_download(repo_id: str, filename: str = "") -> str:
         if os.environ.get("HF_ENDPOINT") or os.environ.get("HF_NO_MIRROR_FALLBACK"):
             raise
         logger = logging.getLogger("omni")
-        logger.warning("⚠️ 直连 HuggingFace 失败（%s），改用镜像 %s 重试 …",
+        logger.warning("直连 HuggingFace 失败（%s），改用镜像 %s 重试 …",
                        repo_id, _HF_MIRROR)
         _switch_hf_endpoint(_HF_MIRROR)
         try:
             return _remote()
         except Exception as e2:
-            logger.error("⚠️ 镜像 %s 下载 %s 也失败: %s", _HF_MIRROR, repo_id, e2)
+            logger.error("镜像 %s 下载 %s 也失败: %s", _HF_MIRROR, repo_id, e2)
             raise
 
 
