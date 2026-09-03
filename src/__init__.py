@@ -11,8 +11,6 @@ OmniVoice 配音工具 — 核心包（src/）
 
 推理后端（backends/，只保留 GGUF）：
 - backends.gguf：C++/GGML（omnivoice.cpp，Serveurperso/OmniVoice-GGUF）
-
-旧入口 omni.py 现为兼容 shim，聚合导出共享核心与 GGUF 后端。
 """
 
 from .backends import BACKEND_IDS, get_backend

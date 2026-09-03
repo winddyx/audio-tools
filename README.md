@@ -19,9 +19,6 @@ uv run python cli.py --transcribe <ref_audio.wav>
 
 # Web：http://localhost:38001
 uv run python web.py
-
-# 测试（stub 后端，不加载模型）
-uv run pytest
 ```
 
 生成结果输出到文本文件所在目录，文件名 `<文本名>.<unix时间戳>.wav`。设置统一在 `src/config.py` 顶部变量（同名环境变量可覆盖）；CLI 参数只负责"引用哪个文件 / 语言 / 次数 / 设备"。

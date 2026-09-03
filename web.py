@@ -46,15 +46,8 @@ from src.pipeline import synthesize
 
 logger = logging.getLogger("omnivoice-web")
 
-# ── 主题与样式（gradio 6: launch() 时传入）────────────────
-# 主题：YTheme/TehnoX（HF Space，首次自动下载缓存）；
-# 字体：统一用系统/浏览器默认等宽栈（不随主题的 Roboto 走）
-_THEME = gr.themes.Soft.from_hub("YTheme/TehnoX")
-_THEME.font = [
-    "ui-monospace", "SFMono-Regular", "Menlo", "Consolas",
-    "Liberation Mono", "monospace",
-]
-_THEME.font_mono = _THEME.font
+# ── 样式（gradio 6: launch() 时传入）────────────────
+# 主题：使用 gradio 默认主题（不加载任何在线/自定义主题）
 _CSS = """
 .gradio-container {max-width: 100% !important; font-size: 16px !important;}
 .gradio-container h1 {font-size: 1.5em !important;}
@@ -504,16 +497,6 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
-        "--model-id",
-        default=os.environ.get("OMNI_MODEL_ID", Config.model_id),
-        help=f"模型 ID（默认: {Config.model_id}）",
-    )
-    parser.add_argument(
-        "--model-path",
-        default=os.environ.get("OMNI_MODEL_PATH", Config.model_path),
-        help="本地模型路径（非空时优先于 --model-id）",
-    )
-    parser.add_argument(
         "--device", default=None,
         help=f"推理设备（默认自动检测: CUDA > XPU > MPS > CPU）",
     )
@@ -561,8 +544,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 模型预热加载（复用后端 _load_model：GGUF 首次运行自动编译/下载，
     # 权重本地优先；二进制/权重不存在时自动获取）
     cfg = Config(
-        model_id=args.model_id,
-        model_path=args.model_path,
         device=_DEVICE,
         asr_model=args.asr_model or "",
     )
@@ -576,7 +557,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         server_port=args.port,
         share=args.share,
         root_path=args.root_path,
-        theme=_THEME,
         css=_CSS,
         # 是否自动打开浏览器由 config.WEB_AUTO_OPEN_BROWSER 控制
         inbrowser=WEB_AUTO_OPEN_BROWSER,

@@ -99,14 +99,6 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--asr-model", type=str, default=None,
         help="本地 SenseVoice GGUF 文件路径（默认经 HF 下载 sensevoice-small-q8.gguf）",
     )
-    parser.add_argument(
-        "--lang-sym", type=str, default=None,
-        help="ASR 语言代码（如 en/zh/yue/ja/ko）；留空则跟随 --language，再留空自动检测",
-    )
-    parser.add_argument(
-        "--region-sym", type=str, default=None,
-        help="（保留字段，SenseVoice 自动检测语言）",
-    )
     return parser.parse_args(argv)
 
 
@@ -132,16 +124,9 @@ def _resolve_config(args: argparse.Namespace,
         draw_count=_pick(args.draw_count, "DRAW_COUNT", d.draw_count, int),
         output_dir=_pick(args.output_dir, "OUTPUT_DIR", d.output_dir),
         device=_pick(args.device, "DEVICE", d.device),
-        dtype=_pick(None, "DTYPE", d.dtype),
-        model_path=_pick(None, "MODEL_PATH", d.model_path),
-        model_id=_pick(None, "OMNIVOICE_MODEL_ID", d.model_id),
         transcribe=bool(getattr(args, "transcribe", False))
                    or _to_bool(os.environ.get("TRANSCRIBE", "")),
         asr_model=_pick(getattr(args, "asr_model", None), "ASR_MODEL", d.asr_model),
-        asr_hub=_pick(None, "ASR_HUB", d.asr_hub),
-        asr_vad=_pick(None, "ASR_VAD", d.asr_vad),
-        asr_lang_sym=_pick(getattr(args, "lang_sym", None), "ASR_LANG_SYM", d.asr_lang_sym),
-        asr_region_sym=_pick(getattr(args, "region_sym", None), "ASR_REGION_SYM", d.asr_region_sym),
     )
     if not cfg.device:
         cfg.device = get_best_device()
@@ -170,7 +155,6 @@ def main(argv: Optional[list[str]] = None) -> None:
       uv run python cli.py <ref_audio> <text_file> --language en
       uv run python cli.py --text <text_file> --instruct "female, low pitch, british accent"
       uv run python cli.py --transcribe <ref_audio>                 # ASR（SenseVoiceSmall-GGUF）
-      uv run python cli.py --transcribe <ref_audio> --lang-sym en
       DRAW_COUNT=3 LANGUAGE=yue uv run python cli.py /path/to/ref.wav /path/to/text.txt
     """
     logger = logging.getLogger("omni")

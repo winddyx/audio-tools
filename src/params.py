@@ -2,8 +2,8 @@
 OmniVoice 配音工具 — 生成参数（环境变量 → 后端入参）
 
 生成参数不设默认值，全部交由后端自身默认值；只有显式设置的环境变量才
-透传。参数名（generate() 关键字）与旧 omni.py 完全一致，供 cli.py /
-web.py 与各后端共用（后端只取自己支持的子集）。
+透传。参数名（generate() 关键字）供 cli.py / web.py 与各后端共用（后端只取
+自己支持的子集）。
 """
 
 from __future__ import annotations
