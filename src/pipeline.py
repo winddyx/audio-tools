@@ -26,6 +26,10 @@ from .config import Config
 from .funasr import _transcribe_ref
 from .gguf import ChunkInfo, generate, _load_model as _gguf_load_model
 
+# 参考音频转写文本缓存（key: 绝对路径+大小+mtime+asr_model）
+# 同一参考音频在多轮抽卡间只转写一次
+_ASR_TEXT_CACHE: dict[tuple, str] = {}
+
 
 @dataclass
 class SynthesisResult:
@@ -73,14 +77,23 @@ def synthesize(
 
     asr_out = ""
     if ref_audio and not ref_text:
-        logger.info("ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
-        # ASR 只用到 cfg.ref_audio / asr_model，单独构造避免污染调用方配置
+        # 参考音频转写缓存：同一音频（路径+大小+mtime+asr_model 均一致）只转写
+        # 一次。web 抽卡每轮都走 synthesize 且不传 ref_text，若无缓存每轮都会
+        # 重跑一遍 SenseVoice 子进程（vc 已前置转写并传入，天然命中）
         asr_cfg = replace(cfg, ref_audio=ref_audio)
-        ref_text = _transcribe_ref(asr_cfg, logger)
+        key = (os.path.abspath(ref_audio),
+               os.path.getsize(ref_audio),
+               os.path.getmtime(ref_audio),
+               os.path.abspath(asr_cfg.asr_model) if asr_cfg.asr_model else "")
+        ref_text = _ASR_TEXT_CACHE.get(key)
+        if ref_text is None:
+            logger.info("ref_text 未提供，用 SenseVoiceSmall-GGUF 转写参考音频 …")
+            ref_text = _transcribe_ref(asr_cfg, logger)
+            if not ref_text:
+                raise ValueError("ASR 转写结果为空（参考音频可能为静音）")
+            _ASR_TEXT_CACHE[key] = ref_text
         asr_out = ref_text
         logger.info("参考文本: %s", ref_text)
-        if not ref_text:
-            raise ValueError("ASR 转写结果为空（参考音频可能为静音）")
 
     result = generate(
         cfg, logger,

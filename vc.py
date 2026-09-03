@@ -147,6 +147,8 @@ def _resolve_config(args: argparse.Namespace,
     if not cfg.device:
         cfg.device = get_best_device()
     return cfg
+
+
 def _validate_inputs(cfg: Config, logger: logging.Logger) -> None:
     """验证输入文件是否存在，不通过则退出进程。"""
     if cfg.draw_count < 1:
@@ -285,6 +287,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         for r in results:
             logger.info("  %s", r.out_path)
         logger.info("共 %d 个文件，写入 %s", len(results), out_dir)
+    except KeyboardInterrupt:
+        # 用户 Ctrl-C：合成子进程/心跳线程已由 finally 清理，这里只做干净收尾
+        # （不打印 traceback；手动中断属正常退出路径，非代码缺陷）
+        logger.info("")
+        logger.info("已手动中断，未完成的生成已放弃（已生成的文件已写入）")
+        sys.exit(130)
     except Exception:
         # cfg 可能尚未赋值（_parse_args/_resolve_config 阶段抛错）——用局部变量兜底
         cfg = locals().get("cfg")

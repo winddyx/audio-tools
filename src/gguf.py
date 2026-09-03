@@ -402,21 +402,27 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
         rc = subprocess.run(cmd, input=payload, env=env,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE)
+        first_fail: bytes | None = None
         if (rc.returncode != 0 and backend and backend != "CPU"
                 and _backend_init_failed(rc.stderr)):
             # 后端初始化失败（设备名无效/无可用后端）→ 警告并回退 CPU 重试一次
+            first_fail = rc.stderr
             logger.warning("%s 初始化失败（退出码 %d），改用 CPU 重试 …",
                            backend, rc.returncode)
             env["GGML_BACKEND"] = "CPU"
             rc = subprocess.run(cmd, input=payload, env=env,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.PIPE)
+        if GGUF_DEBUG:
+            # 先完整输出（含重试前的第一次失败 stderr），再决定是否抛错，
+            # 保证调试信息不丢失
+            for blob in (first_fail, rc.stderr):
+                if blob:
+                    sys.stderr.write(blob.decode("utf-8", "replace"))
         if rc.returncode != 0:
             raise RuntimeError(
                 "omnivoice-tts 生成失败（退出码 %d）\n%s"
                 % (rc.returncode, _stderr_tail(rc.stderr)))
-        if GGUF_DEBUG and rc.stderr:
-            sys.stderr.write(rc.stderr.decode("utf-8", "replace"))
 
         if not os.path.isfile(out_wav) or os.path.getsize(out_wav) == 0:
             raise RuntimeError("omnivoice-tts 未产出 WAV 文件")
