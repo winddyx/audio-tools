@@ -71,6 +71,11 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   装饰（web 用默认 gradio 主题，不引外部 CSS/theme）。
 - 六阶段流程（CLI 与 Web 同构）：环境准备→模型准备→输入文件检查→ASR→VOICECLONE→
   输出文件规范；vc.py 终端以 `[i/6]` 显示，长合成每 10s 心跳报进度。
+- web 双 Tab（生成/配置）：生成页左栏＝参考音频（上传即 SenseVoice 自动转写并回填）→
+  参考文本框→txt 文件（读入文本框）→待合成文本，右栏＝状态+按抽卡次数展示结果；配置页
+  提供模型（omnivoice/indextts2/fireredtts3）、设备、语言、抽卡次数与当前模型生成参数，
+  为进程内运行期设置（事件回调里经 gen_kwargs 覆盖 config 常量；空值回常量/引擎默认），
+  持久化修改仍以 src/config.py 顶部变量（或同名 env）为准。
 - `_run_quiet`/`run_cli` 失败抛 `RuntimeError` 带 stderr 尾部诊断（≈60 行），不在入口裸奔。
 - **web 引擎/模型按需加载**：web.py 启动只启动 UI（无预热）；引擎/模型在点击"生成"时才由
   synthesize 内部定位/自动构建/下载，点击结束（finally）调 `pipeline.release()`（清
