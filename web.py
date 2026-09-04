@@ -153,9 +153,9 @@ def build_demo() -> gr.Blocks:
                             lines=3, interactive=True,
                             placeholder="上传参考音频后自动填入转写文本…",
                         )
-                        txt_file = gr.File(
-                            label="3. 文本文件（.txt，可选）",
-                            file_types=[".txt"], type="filepath",
+                        txt_file = gr.UploadButton(
+                            "3. 文本文件（.txt，可选）",
+                            file_types=[".txt"], file_count="single",
                         )
                         text = gr.Textbox(
                             label="4. 待合成文本 Text to Synthesize",
@@ -263,7 +263,9 @@ def build_demo() -> gr.Blocks:
                 return gr.update(value=""), f"ASR 失败: {type(e).__name__}: {e}"
 
         def _load_txt(file_path):
-            """读取 txt 文件内容填入待合成文本框。"""
+            """读取 txt 文件内容填入待合成文本框（UploadButton 值兼容单路径/列表）。"""
+            if isinstance(file_path, (list, tuple)):
+                file_path = file_path[0] if file_path else None
             if not file_path:
                 return gr.update()
             try:
@@ -333,7 +335,7 @@ def build_demo() -> gr.Blocks:
             inputs=[ref_audio, device],
             outputs=[asr_text, status],
         )
-        txt_file.change(_load_txt, inputs=[txt_file], outputs=[text])
+        txt_file.upload(_load_txt, inputs=[txt_file], outputs=[text])
         model.change(
             _model_changed,
             inputs=[model],
