@@ -104,15 +104,16 @@ AUDIOCPP_DEBUG = _env_bool("AUDIOCPP_DEBUG", False)
 # （src/omnivoice.py、src/indextts2.py），本文件只放默认选择与本地目录。
 TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 
-# ── 生成参数（各模型核心在拼 CLI 时消费；空值 = 不传 flag = 用引擎默认）──
-# 每个模型族只消费自己支持的参数，其余仍按核心内"忽略并提示"处理：
-# - OmniVoice：去噪步数 / CFG 引导尺度（引擎默认 32 步 / 2.0）+ 随机种子
-# - IndexTTS-2.5：gpt 层 top-k / top-p / temperature（引擎默认 30 / 0.8 / 0.8）+ 随机种子
-OMNI_INFERENCE_STEPS = _env_int("OMNI_INFERENCE_STEPS", 0)   # 0 = 引擎默认
-OMNI_GUIDANCE_SCALE = _env("OMNI_GUIDANCE_SCALE", "")        # 空 = 引擎默认
-INDEXTTS_TOP_K = _env_int("INDEXTTS_TOP_K", 0)               # 0 = 引擎默认
-INDEXTTS_TOP_P = _env("INDEXTTS_TOP_P", "")                  # 空 = 引擎默认
-INDEXTTS_TEMPERATURE = _env("INDEXTTS_TEMPERATURE", "")      # 空 = 引擎默认
+# ── 生成参数（各模型核心在拼 CLI 时消费；默认 = 官方基准，env 可覆盖）──
+# 默认值即各模型的官方基准（不改引擎质量/速度取舍，只是显式落在 config）：
+# - OmniVoice：去噪步数 32 / CFG 引导 2.0 + 随机种子
+# - IndexTTS-2.5：gpt 层 top-k 30 / top-p 0.8 / temperature 0.8 + 随机种子
+# 设 0 / 空 / -1 可回到"不传 flag = 引擎默认"。
+OMNI_INFERENCE_STEPS = _env_int("OMNI_INFERENCE_STEPS", 32)  # 0 = 引擎默认
+OMNI_GUIDANCE_SCALE = _env("OMNI_GUIDANCE_SCALE", "2.0")     # 空 = 引擎默认
+INDEXTTS_TOP_K = _env_int("INDEXTTS_TOP_K", 30)              # 0 = 引擎默认
+INDEXTTS_TOP_P = _env("INDEXTTS_TOP_P", "0.8")               # 空 = 引擎默认
+INDEXTTS_TEMPERATURE = _env("INDEXTTS_TEMPERATURE", "0.8")   # 空 = 引擎默认
 GEN_SEED = _env_int("GEN_SEED", -1)                          # -1 = 随机（不传 seed）
 
 # ── ASR（参考音频转写）：SenseVoice-Small（audiocpp sense_asr 族）──

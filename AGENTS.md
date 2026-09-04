@@ -54,7 +54,8 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
 - **模型核心接口**：每个 TTS/ASR 核心实现 `_ensure_model(logger) -> str` 与
   `generate(cfg, logger, **kwargs)`；pipeline 按模型名分发，不要旁路。
   生成参数（steps/guidance/top-k/seed 等）在 config.py 顶部常量维护（env 覆盖），
-  各核心拼 CLI 时消费自己的子集，空值不发 flag = 引擎默认；`GEN_SEED` 固定可复现。
+  默认值 = 官方基准（omni 32 步/2.0、indextts2 30/0.8/0.8），设 0/空 回到引擎默认；
+  各核心拼 CLI 时消费自己的子集；`GEN_SEED` 固定可复现（-1 = 随机）。
 - **采样率不写死**：generate 后用 soundfile 从产出 wav 读实际 sr（omnivoice 24 kHz /
   indextts2 22.05 kHz）。omnivoice 克隆用 `--task tts`（不是 clon）+ `--voice-ref` +
   `--reference-text`；indextts2 用 `--task clon` + `--voice-ref`。
