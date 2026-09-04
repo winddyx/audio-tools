@@ -23,10 +23,13 @@ synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日�
 from __future__ import annotations
 
 import atexit
+import contextvars
+import html as _html
 import logging
 import os
 import shutil
 import time
+from datetime import datetime
 
 import gradio as gr
 import gradio.processing_utils as _gradio_proc
@@ -54,6 +57,57 @@ from src.config import (
 from src.pipeline import release, synthesize
 
 logger = logging.getLogger("audio-tools-web")
+
+# ── 生成页"终端日志"（替代原状态框）──────────────────────
+# 只展示从浏览器打开页面（该 gradio 会话）起产生的日志：事件处理器在进入时
+# 把本会话的日志缓冲列表写入 _CTX_BUF，_SessionLogHandler 捕获期间发出的
+# logging 记录（引擎/ASR/编排同款控制台信息）；无滚动条、高度固定、最新置底
+# （超出部分从顶部裁掉）。日志缓冲按 gradio 会话隔离（gr.State），刷新页面
+# 即清空重来。
+_TERM_HEIGHT = 100                       # 终端高度（px），固定
+_TERM_MAX_LINES = 600                    # 会话缓冲行数上限（防无限增长）
+_CTX_BUF: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "web_term_buf", default=None)
+
+
+class _SessionLogHandler(logging.Handler):
+    """把有页面会话上下文期间发出的日志记录追加到该会话的终端缓冲。"""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        buf = _CTX_BUF.get()
+        if buf is None:
+            return
+        try:
+            ts = datetime.now().strftime("%H:%M:%S")
+            buf.append(f"{ts} {record.levelname:<7} {record.getMessage()}")
+            if len(buf) > _TERM_MAX_LINES:
+                del buf[: len(buf) - _TERM_MAX_LINES]
+        except Exception:
+            pass
+
+
+_SESSION_LOG_HANDLER = _SessionLogHandler(level=logging.INFO)
+logging.getLogger().addHandler(_SESSION_LOG_HANDLER)
+
+
+def _term_html(buf: list[str] | None) -> str:
+    """按固定高度渲染终端：白底灰字（默认主题观感）、底部对齐、无滚动条。"""
+    lines = (buf or [])[-240:]
+    body = "<br>".join(_html.escape(x).replace("\n", "<br>") for x in lines)
+    if not body:
+        body = '<span style="color:#b6bcc4">…（暂无操作日志）</span>'
+    return (
+        '<div style="position:relative;height:%dpx;overflow:hidden;'
+        'background:#ffffff;color:#7a7f87;font:12px/1.55 Menlo,Consolas,monospace;'
+        'border:1px solid #e2e4e8;border-radius:6px;box-sizing:border-box;">'
+        '<div style="position:absolute;left:0;right:0;bottom:0;padding:5px 8px;'
+        'word-break:break-all;">%s</div></div>'
+    ) % (_TERM_HEIGHT, body)
+
+
+def _term_line(level: str, msg: str) -> str:
+    ts = datetime.now().strftime("%H:%M:%S")
+    return f"{ts} {level:<7} {msg}"
 
 # 克隆页抽卡结果槽位数（也是抽卡次数上限）
 _MAX_DRAWS = 8
@@ -164,8 +218,9 @@ def build_demo() -> gr.Blocks:
                         )
                         btn = gr.Button("生成 Generate", variant="primary")
                     with gr.Column(scale=1):
-                        status = gr.Textbox(
-                            label="状态 Status", lines=3, interactive=False)
+                        gr.Markdown("**终端日志 Terminal（自本页打开起；最新在底部）**")
+                        log_state = gr.State([])
+                        terminal = gr.HTML(_term_html([]))
                         outputs = [
                             gr.Audio(label=f"结果 {i + 1} Result {i + 1}",
                                      type="filepath", visible=False)
@@ -248,33 +303,56 @@ def build_demo() -> gr.Blocks:
 
         # ── 事件 ─────────────────────────────────────────
 
-        def _asr_on_upload(audio, device_v):
+        def _page_banner():
+            """页面（会话）打开时写入起始行：之后日志只从此刻开始记录。"""
+            buf = []
+            buf.append(_term_line(
+                "INFO", "会话开始（本页于 %s 打开）"
+                % datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            return buf, _term_html(buf)
+
+        def _asr_on_upload(audio, device_v, buf):
             """上传参考音频后立即用 SenseVoice 转写，文本回填 ASR 显示框。"""
             if not audio:
-                return gr.update(value=""), "已清除参考音频。"
-            cfg = _cfg("", device_v, ref_audio=audio)
+                buf.append(_term_line("INFO", "已清除参考音频。"))
+                return gr.update(value=""), _term_html(buf), buf
+            _CTX_BUF.set(buf)
             try:
+                cfg = _cfg("", device_v, ref_audio=audio)
                 text_out = _transcribe_ref(cfg, logger)
                 if not text_out:
-                    return gr.update(value=""), "ASR 转写结果为空（参考音频可能为静音）。"
-                return gr.update(value=text_out), "ASR 转写完成，可修改后用于生成。"
+                    buf.append(_term_line(
+                        "WARN", "ASR 转写结果为空（参考音频可能为静音）。"))
+                    return gr.update(value=""), _term_html(buf), buf
+                buf.append(_term_line(
+                    "INFO", "ASR 转写完成，可修改后用于生成。"))
+                return gr.update(value=text_out), _term_html(buf), buf
             except Exception as e:
                 logger.exception("参考音频 ASR 失败")
-                return gr.update(value=""), f"ASR 失败: {type(e).__name__}: {e}"
+                buf.append(_term_line(
+                    "ERROR", f"ASR 失败: {type(e).__name__}: {e}"))
+                return gr.update(value=""), _term_html(buf), buf
+            finally:
+                _CTX_BUF.set(None)
 
-        def _load_txt(file_path):
+        def _load_txt(file_path, buf):
             """读取 txt 文件内容填入待合成文本框（UploadButton 值兼容单路径/列表）。"""
             if isinstance(file_path, (list, tuple)):
                 file_path = file_path[0] if file_path else None
             if not file_path:
-                return gr.update()
+                return gr.update(), _term_html(buf), buf
             try:
                 with open(file_path, encoding="utf-8") as f:
                     content = f.read()
             except Exception as e:
                 logger.exception("读取 txt 失败")
-                return gr.update()
-            return gr.update(value=content)
+                buf.append(_term_line(
+                    "ERROR", f"读取 txt 失败: {type(e).__name__}: {e}"))
+                return gr.update(), _term_html(buf), buf
+            buf.append(_term_line(
+                "INFO", "已读入文本文件 %s（%d 字符）"
+                % (os.path.basename(file_path), len(content))))
+            return gr.update(value=content), _term_html(buf), buf
 
         def _model_changed(model_v):
             """模型切换：只显示当前模型的生成参数组。"""
@@ -288,21 +366,25 @@ def build_demo() -> gr.Blocks:
 
         def _clone_fn(text_v, ref_aud, ref_txt, model_v, device_v, lang_v,
                       draw_v, omni_s, omni_c, it2_k, it2_p, it2_t,
-                      fr3_s, fr3_c, fr3_st):
-            """点击生成：按配置页模型/参数逐次抽卡，输出到右栏音频槽。"""
+                      fr3_s, fr3_c, fr3_st, buf):
+            """点击生成：按配置页模型/参数逐次抽卡，日志写入终端框。"""
             draw_v = max(1, min(int(draw_v or 2), _MAX_DRAWS))
             if not text_v or not text_v.strip():
-                return (*([gr.update()] * _MAX_DRAWS), "请输入待合成文本。")
+                buf.append(_term_line("WARN", "未输入待合成文本，已取消。"))
+                return (*([gr.update()] * _MAX_DRAWS), _term_html(buf), buf)
             if not ref_aud:
-                return (*([gr.update()] * _MAX_DRAWS), "请上传参考音频。")
-            m = (model_v or "omnivoice").strip().lower()
-            cfg = _cfg(m, device_v)
-            gen_kwargs = _model_gen_kwargs(m, omni_s, omni_c, it2_k, it2_p,
-                                           it2_t, fr3_s, fr3_c, fr3_st)
-            lang = None if (lang_v or "Auto") == "Auto" else lang_v
-            ts = int(time.time())
-            results: list = []
+                buf.append(_term_line("WARN", "未上传参考音频，已取消。"))
+                return (*([gr.update()] * _MAX_DRAWS), _term_html(buf), buf)
+            _CTX_BUF.set(buf)
             try:
+                m = (model_v or "omnivoice").strip().lower()
+                cfg = _cfg(m, device_v)
+                gen_kwargs = _model_gen_kwargs(m, omni_s, omni_c, it2_k,
+                                               it2_p, it2_t, fr3_s, fr3_c,
+                                               fr3_st)
+                lang = None if (lang_v or "Auto") == "Auto" else lang_v
+                ts = int(time.time())
+                results: list = []
                 for i in range(draw_v):
                     result = synthesize(
                         cfg, logger,
@@ -315,27 +397,34 @@ def build_demo() -> gr.Blocks:
                         gen_kwargs=gen_kwargs,
                     )
                     results.append(result.out_path)
+                buf.append(_term_line(
+                    "INFO", f"生成完成 共 {draw_v} 个结果（模型 {m}）。"))
                 slots = [
                     gr.update(visible=True, value=results[i])
                     if i < draw_v else gr.update(visible=False)
                     for i in range(_MAX_DRAWS)
                 ]
-                return (*slots,
-                        f"生成完成 共 {draw_v} 个结果（模型 {m}）")
+                return (*slots, _term_html(buf), buf)
             except Exception as e:
                 logger.exception("生成失败")
-                return (*([gr.update()] * _MAX_DRAWS),
-                        f"错误: {type(e).__name__}: {e}")
+                buf.append(_term_line(
+                    "ERROR", f"生成失败: {type(e).__name__}: {e}"))
+                return (*([gr.update()] * _MAX_DRAWS), _term_html(buf), buf)
             finally:
                 # 生成完（无论成败）立即卸载引擎/模型进程内状态
+                _CTX_BUF.set(None)
                 release()
 
         ref_audio.change(
             _asr_on_upload,
-            inputs=[ref_audio, device],
-            outputs=[asr_text, status],
+            inputs=[ref_audio, device, log_state],
+            outputs=[asr_text, terminal, log_state],
         )
-        txt_file.upload(_load_txt, inputs=[txt_file], outputs=[text])
+        txt_file.upload(
+            _load_txt,
+            inputs=[txt_file, log_state],
+            outputs=[text, terminal, log_state],
+        )
         model.change(
             _model_changed,
             inputs=[model],
@@ -345,9 +434,10 @@ def build_demo() -> gr.Blocks:
             _clone_fn,
             inputs=[text, ref_audio, asr_text, model, device, language,
                     draw_count, omni_steps, omni_cfg, it2_topk, it2_topp,
-                    it2_temp, fr3_steps, fr3_cfg, fr3_stop],
-            outputs=[*outputs, status],
+                    it2_temp, fr3_steps, fr3_cfg, fr3_stop, log_state],
+            outputs=[*outputs, terminal, log_state],
         )
+        demo.load(_page_banner, outputs=[log_state, terminal])
     return demo
 
 
