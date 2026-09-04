@@ -21,7 +21,14 @@ import logging
 import os
 import tempfile
 
-from .audiocpp import AudioResult, _backend_flag, _ensure_binary, ensure_tmp_dir, run_cli
+from .audiocpp import (
+    AudioResult,
+    _backend_flag,
+    _chunk_flags,
+    _ensure_binary,
+    ensure_tmp_dir,
+    run_cli,
+)
 from .config import (
     Config,
     FIREREDTTS3_GUIDANCE_SCALE,
@@ -128,6 +135,8 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
         cmd = [binary, "--task", "clon", "--family", FAMILY,
                "--model", model, "--backend", _backend_flag(cfg.device),
                "--text", text, "--voice-ref", ref_audio, "--out", out_wav]
+        # 长文本分块（config.TEXT_CHUNK_SIZE/MODE，自动选 endline/default）
+        cmd += _chunk_flags(text)
         tag = _language_tag(language)
         if tag:
             cmd += ["--language", tag]

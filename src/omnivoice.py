@@ -17,7 +17,13 @@ import logging
 import os
 import tempfile
 
-from .audiocpp import AudioResult, _ensure_binary, ensure_tmp_dir, run_cli
+from .audiocpp import (
+    AudioResult,
+    _chunk_flags,
+    _ensure_binary,
+    ensure_tmp_dir,
+    run_cli,
+)
 from .config import (
     Config,
     GEN_SEED,
@@ -32,9 +38,9 @@ from .hf import _ensure_gguf_file
 FAMILY = "omnivoice"
 
 # 权重：项目 models/ 仅支持手工放置；默认放 HF 缓存（引擎须真实 .gguf 路径）
-GGUF_LOCAL = os.path.join(MODELS_DIR, "OmniVoice-GGUF", "omnivoice-bf16.gguf")
+GGUF_LOCAL = os.path.join(MODELS_DIR, "OmniVoice-GGUF", "omnivoice-q8_0.gguf")
 GGUF_HF_REPO = "audio-cpp/audio.cpp-gguf"
-GGUF_HF_FILE = "OmniVoice-GGUF/omnivoice-bf16.gguf"
+GGUF_HF_FILE = "OmniVoice-GGUF/omnivoice-q8_0.gguf"
 
 # 生成参数 → audiocpp CLI 参数映射（每调用 kwargs 优先，其次 config 顶部常量；
 # 其余未知参数忽略并提示）
@@ -104,6 +110,8 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
                "--model", model, "--backend", _backend_of(cfg),
                "--text", text, "--voice-ref", ref_audio,
                "--reference-text", ref_text, "--out", out_wav]
+        # 长文本分块（config.TEXT_CHUNK_SIZE/MODE，自动选 endline/default）
+        cmd += _chunk_flags(text)
         if language:
             cmd += ["--language", str(language)]
         # 生成参数：kwargs 优先 → config 顶部常量兜底；空值不发 flag

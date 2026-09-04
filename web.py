@@ -40,6 +40,8 @@ from src import (
     _transcribe_ref,
 )
 from src.config import (
+    COSYVOICE3_INFERENCE_STEPS,
+    COSYVOICE3_TOP_K,
     FIREREDTTS3_GUIDANCE_SCALE,
     FIREREDTTS3_INFERENCE_STEPS,
     FIREREDTTS3_STOP_THRESHOLD,
@@ -117,7 +119,7 @@ _TMP_DIR = TMP_DIR
 atexit.register(shutil.rmtree, _TMP_DIR, ignore_errors=True)
 
 # 可选项（与 src/config.py 顶部 TTS_MODEL / 设备检测保持一致）
-_MODEL_CHOICES = ["omnivoice", "indextts2", "fireredtts3"]
+_MODEL_CHOICES = ["omnivoice", "indextts2", "fireredtts3", "cosyvoice3"]
 _DEVICE_CHOICES = ["auto", "cuda", "mps", "cpu", "xpu"]   # auto = 引擎自动（cuda>mps>cpu）
 _LANG_CHOICES = ["Auto", "zh", "en", "yue", "ja", "ko"]
 
@@ -126,6 +128,7 @@ _MODEL_PARAMS: dict[str, list[str]] = {
     "omnivoice": ["num_inference_steps", "guidance_scale"],
     "indextts2": ["top_k", "top_p", "temperature"],
     "fireredtts3": ["num_inference_steps", "guidance_scale", "stop_threshold"],
+    "cosyvoice3": ["top_k", "num_inference_steps"],
 }
 
 
@@ -159,7 +162,7 @@ def _cfg(model: str, device: str, **kw) -> Config:
 
 
 def _model_gen_kwargs(model_v, omni_s, omni_c, it2_k, it2_p, it2_t,
-                      fr3_s, fr3_c, fr3_st) -> dict | None:
+                      fr3_s, fr3_c, fr3_st, cosy_k, cosy_s) -> dict | None:
     """按模型把配置页生成参数 UI 值转成 gen_kwargs（空值跳过 → 常量/引擎默认）。"""
     m = (model_v or "omnivoice").strip().lower()
     table = {
@@ -170,6 +173,8 @@ def _model_gen_kwargs(model_v, omni_s, omni_c, it2_k, it2_p, it2_t,
         "fireredtts3": {"num_inference_steps": fr3_s,
                         "guidance_scale": fr3_c,
                         "stop_threshold": fr3_st},
+        "cosyvoice3": {"top_k": cosy_k,
+                       "num_inference_steps": cosy_s},
     }
     kw = {}
     for key, v in table.get(m, {}).items():
@@ -296,6 +301,17 @@ def build_demo() -> gr.Blocks:
                         value=float(FIREREDTTS3_STOP_THRESHOLD or 0),
                         minimum=0, maximum=1, step=0.05, info="0 = 引擎默认",
                     )
+                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("cosy")) as g_cosy:
+                    gr.Markdown("**CosyVoice-3 生成参数（零样本克隆）**")
+                    cosy_topk = gr.Number(
+                        label="AR top-k", precision=0, value=COSYVOICE3_TOP_K,
+                        minimum=0, info="0 = 引擎默认",
+                    )
+                    cosy_steps = gr.Number(
+                        label="flow 步数 num_inference_steps",
+                        precision=0, value=COSYVOICE3_INFERENCE_STEPS, minimum=0,
+                        info="0 = 引擎默认",
+                    )
                 gr.Markdown(
                     "持久化修改请编辑 **src/config.py** 顶部变量或设置同名环境变量；"
                     "本页设置只在当前进程内生效，重启后回到 config.py 默认值。"
@@ -361,12 +377,13 @@ def build_demo() -> gr.Blocks:
                 gr.update(visible=m == "omnivoice"),
                 gr.update(visible=m.startswith("indextts")),
                 gr.update(visible=m.startswith("firered")),
+                gr.update(visible=m.startswith("cosy")),
                 f"当前模型 **{m}** 的生成参数（留空/0 = config.py 默认或引擎默认）",
             )
 
         def _clone_fn(text_v, ref_aud, ref_txt, model_v, device_v, lang_v,
                       draw_v, omni_s, omni_c, it2_k, it2_p, it2_t,
-                      fr3_s, fr3_c, fr3_st, buf):
+                      fr3_s, fr3_c, fr3_st, cosy_k, cosy_s, buf):
             """点击生成：按配置页模型/参数逐次抽卡，日志写入终端框。"""
             draw_v = max(1, min(int(draw_v or 2), _MAX_DRAWS))
             if not text_v or not text_v.strip():
@@ -379,11 +396,14 @@ def build_demo() -> gr.Blocks:
             try:
                 m = (model_v or "omnivoice").strip().lower()
                 cfg = _cfg(m, device_v)
-                gen_kwargs = _model_gen_kwargs(m, omni_s, omni_c, it2_k,
-                                               it2_p, it2_t, fr3_s, fr3_c,
-                                               fr3_st)
+                gen_kwargs = _model_gen_kwargs(
+                    m, omni_s, omni_c, it2_k, it2_p, it2_t, fr3_s, fr3_c,
+                    fr3_st, cosy_k, cosy_s)
                 lang = None if (lang_v or "Auto") == "Auto" else lang_v
-                ts = int(time.time())
+                # 输出命名：<参考音频名，去扩展名>.<unix秒>.wav（同秒冲突由
+                # pipeline 递增秒数）；gradio 上传路径保留原始文件名
+                audio_base = (os.path.splitext(os.path.basename(ref_aud or ""))[0]
+                              or "audio")
                 results: list = []
                 for i in range(draw_v):
                     result = synthesize(
@@ -393,7 +413,7 @@ def build_demo() -> gr.Blocks:
                         ref_audio=ref_aud,
                         ref_text=(ref_txt or None),
                         out_dir=_TMP_DIR,
-                        out_name=f"{ts}-{i + 1}",
+                        out_name=audio_base,
                         gen_kwargs=gen_kwargs,
                     )
                     results.append(result.out_path)
@@ -428,13 +448,14 @@ def build_demo() -> gr.Blocks:
         model.change(
             _model_changed,
             inputs=[model],
-            outputs=[g_omni, g_it2, g_fr3, param_note],
+            outputs=[g_omni, g_it2, g_fr3, g_cosy, param_note],
         )
         btn.click(
             _clone_fn,
             inputs=[text, ref_audio, asr_text, model, device, language,
                     draw_count, omni_steps, omni_cfg, it2_topk, it2_topp,
-                    it2_temp, fr3_steps, fr3_cfg, fr3_stop, log_state],
+                    it2_temp, fr3_steps, fr3_cfg, fr3_stop, cosy_topk,
+                    cosy_steps, log_state],
             outputs=[*outputs, terminal, log_state],
         )
         demo.load(_page_banner, outputs=[log_state, terminal])

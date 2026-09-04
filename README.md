@@ -47,6 +47,7 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
     ├── omnivoice.py       # OmniVoice 模型核心（TTS 语音克隆）
     ├── indextts2.py       # IndexTTS-2.5 模型核心（TTS 语音克隆）
     ├── fireredtts3.py     # FireRedTTS-3 Base 模型核心（零样本语音克隆）
+    ├── cosyvoice3.py      # CosyVoice-3 模型核心（零样本语音克隆）
     ├── sensevoice.py      # SenseVoice-Small ASR 核心（参考音频转写）
     ├── hf.py              # HuggingFace 下载（本地优先 + hf-mirror 兜底 + .gguf 别名）
     └── pipeline.py        # 统一编排 synthesize()/draw()/release()
@@ -83,7 +84,7 @@ uv run python web.py
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `TTS_MODEL` | `omnivoice` | TTS 模型：`omnivoice` / `indextts2` / `fireredtts3` |
+| `TTS_MODEL` | `omnivoice` | TTS 模型：`omnivoice` / `indextts2` / `fireredtts3` / `cosyvoice3` |
 | `LANGUAGE` | 空 | 合成语言（如 `zh` / `en` / `yue`）；空 = 自动 |
 | `DRAW_COUNT` | `2` | 抽卡次数 |
 | `OUTPUT_DIR` | 文本所在目录 | CLI 输出目录 |
@@ -94,8 +95,13 @@ uv run python web.py
 | `FIREREDTTS3_INFERENCE_STEPS` | `4` | FireRedTTS-3 flow 步数（0 = 引擎默认） |
 | `FIREREDTTS3_GUIDANCE_SCALE` | `2.0` | FireRedTTS-3 CFG 引导（空 = 引擎默认） |
 | `FIREREDTTS3_STOP_THRESHOLD` | `0.5` | FireRedTTS-3 AR 停止阈值（空 = 引擎默认） |
+| `COSYVOICE3_TOP_K` | `25` | CosyVoice-3 AR top-k（0 = 引擎默认） |
+| `COSYVOICE3_INFERENCE_STEPS` | `10` | CosyVoice-3 flow 步数（0 = 引擎默认） |
 | `GEN_SEED` | `-1` | 固定随机种子（`-1` = 随机；设同值可复现结果） |
+| `TEXT_CHUNK_SIZE` | `160` | 长文本分块每块上限（`0` = 不分块；修复长文吞字/乱码，实测 OmniVoice 相似度 0.877→0.982） |
+| `TEXT_CHUNK_MODE` | 空 | 分块模式：空 = 自动（输入分段且每段 ≤ 上限用 `endline` 按换行，否则 `default` 按标点断句）；可设 `endline` / `tag_aware` / `japanese` / `default` |
 | `AUDIOCPP_BIN` / `AUDIOCPP_SRC` | 空 | 已编译二进制 / 已有源码（留空自动构建到 vendor/） |
+| `AUDIOCPP_REF` | `dev` | 引擎 clone/构建分支（cosyvoice3 目前仅在 dev 分支实现；main 合并后可改回 `main`） |
 | `ASR_MODEL` | 空 | 本地 SenseVoice GGUF 路径（默认经 HF 下载） |
 | `WEB_IP` / `WEB_PORT` | `0.0.0.0` / `38001` | Web 监听 |
 | `HF_ENDPOINT` | 空 | 直连失败自动切 hf-mirror（`HF_NO_MIRROR_FALLBACK=1` 关闭） |
@@ -110,12 +116,16 @@ uv run python web.py
     `IndexTTS2.5-GGUF/index-tts2_5-q8_0.gguf`
   - FireRedTTS-3 Base（q8_0）：`audio-cpp/audio.cpp-gguf` →
     `FireRedTTS3-Base-GGUF/fireredtts3-base-q8_0.gguf`（零样本语音克隆）
+  - CosyVoice-3（q8_0）：`audio-cpp/audio.cpp-gguf` →
+    `CosyVoice3-GGUF/cosyvoice3-q8_0.gguf`（零样本语音克隆）
 - ASR：`FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` →
   `sensevoice-small-q8-audiocpp-v1.gguf`
 - 引擎：audio.cpp 首次运行自动 clone + cmake 构建到 `vendor/audiocpp/`
-  （custom 模型集：omnivoice / index_tts2 / sense_asr / fireredtts3；
-  引擎/源码/权重均 gitignore，删除后首跑会重新构建下载；macOS 全新机器需
-  brew libomp，audiocpp.py 已注入 include/flag）
+  （custom 模型集：omnivoice / index_tts2 / sense_asr / fireredtts3 /
+  cosyvoice3；clone 分支由 `AUDIOCPP_REF` 决定，默认 `dev`——cosyvoice3 族
+  目前只在 dev 分支实现，main 合并后可改回；引擎/源码/权重均 gitignore，
+  删除后首跑会重新构建下载；macOS 全新机器需 brew libomp，audiocpp.py 已
+  注入 include/flag）
 
 ## CLI 阶段化流程（`[i/6]`）
 

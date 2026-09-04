@@ -29,8 +29,11 @@ from .config import (
     AUDIOCPP_BIN,
     AUDIOCPP_BUILD_ARGS,
     AUDIOCPP_DEBUG,
+    AUDIOCPP_REF,
     AUDIOCPP_REPO,
     AUDIOCPP_SRC,
+    TEXT_CHUNK_MODE,
+    TEXT_CHUNK_SIZE,
     TMP_DIR,
     VENDOR_DIR,
 )
@@ -89,13 +92,15 @@ def _clone_and_build(logger: logging.Logger) -> None:
     os.makedirs(VENDOR_DIR, exist_ok=True)
     env = dict(os.environ)
     if not os.path.isdir(src_dir):
-        logger.info("  git clone %s …", AUDIOCPP_REPO)
-        _run_quiet(["git", "clone", "--depth", "1", AUDIOCPP_REPO, src_dir],
+        # 按 config.AUDIOCPP_REF 分支克隆（cosyvoice3 目前仅 dev 分支实现）
+        logger.info("  git clone %s（分支 %s）…", AUDIOCPP_REPO, AUDIOCPP_REF)
+        _run_quiet(["git", "clone", "--depth", "1", "--branch", AUDIOCPP_REF,
+                    AUDIOCPP_REPO, src_dir],
                    "git clone audio.cpp", logger, env=env)
 
     # 只构建本项目的模型族，避免全套 60+ 族（耗时/体积）
-    # fireredtts3（FireRedTTS-3 Base）零样本语音克隆，见 src/fireredtts3.py
-    models = "omnivoice,index_tts2,sense_asr,fireredtts3"
+    # fireredtts3（FireRedTTS-3 Base）/ cosyvoice3（CosyVoice-3）为零样本语音克隆
+    models = "omnivoice,index_tts2,sense_asr,fireredtts3,cosyvoice3"
     args = [
         "-S", src_dir, "-B", os.path.join(src_dir, "build", "audiocpp"),
         "-DCMAKE_BUILD_TYPE=Release",
@@ -153,6 +158,23 @@ def _ensure_binary(logger: logging.Logger) -> str:
     _BINARY_CACHE = built
     logger.info("audiocpp_cli 就绪: %s", built)
     return _BINARY_CACHE
+
+
+def _chunk_flags(text: str) -> list[str]:
+    """长文本分块 flag（config.TEXT_CHUNK_SIZE/MODE，vc/web 共用）。
+
+    文本长度 ≤ TEXT_CHUNK_SIZE 或设为 0 时返回空（不分块，引擎整段处理）。
+    分块模式自动选择：输入按换行分段且每段都不超上限时用 endline（以换行
+    为块界、段落完整不拆），否则退回 default（引擎按标点/CJK 断句）。
+    """
+    size = TEXT_CHUNK_SIZE
+    if size <= 0 or not text or len(text) <= size:
+        return []
+    mode = TEXT_CHUNK_MODE.strip()
+    if not mode:
+        paras = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        mode = "endline" if (paras and max(map(len, paras)) <= size) else "default"
+    return ["--text-chunk-size", str(size), "--text-chunk-mode", mode]
 
 
 def release_engine() -> None:

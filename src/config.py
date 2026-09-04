@@ -63,7 +63,7 @@ class Config:
 
     # ── 模型（GGUF_LOCAL 手工放置优先；缺失自动经 HF 下载，文件留在 HF 默认缓存，
     #    不落工程目录；引擎需要真实 .gguf 路径，见 hf._ensure_gguf_file）──
-    tts_model: str = ""       # "omnivoice" | "indextts2" | "fireredtts3"；留空用 TTS_MODEL
+    tts_model: str = ""       # "omnivoice" | "indextts2" | "fireredtts3" | "cosyvoice3"；留空用 TTS_MODEL
     device: str = ""          # 留空则自动检测（cuda > xpu > mps > cpu）
 
     # ── 生成模式（本期只做语音克隆）──
@@ -91,6 +91,9 @@ TMP_DIR = os.path.join(_PROJECT_ROOT, ".tmp")        # 运行期临时目录
 # ── 推理引擎：audio.cpp（audiocpp_cli，ggml 框架）──────────
 # 引擎源仓库固定（自动 clone 时使用；已有源码目录可用 AUDIOCPP_SRC 指向）
 AUDIOCPP_REPO = "https://github.com/0xShug0/audio.cpp.git"
+# clone/构建所用的引擎分支或提交（AUDIOCPP_REF）。注意：cosyvoice3 族目前
+# 只在 dev 分支实现（main 尚未合并），故默认 dev；等 main 合并后可改回 main。
+AUDIOCPP_REF = _env("AUDIOCPP_REF", "dev")
 AUDIOCPP_BIN = _env("AUDIOCPP_BIN", "")     # 已编译二进制绝对路径（留空自动定位/构建）
 AUDIOCPP_SRC = _env("AUDIOCPP_SRC", "")     # 已有源码目录（默认 vendor/audiocpp）
 # 追加 cmake 参数（如 "-DGGML_CUDA=ON"）；构建默认参数见 src/audiocpp.py
@@ -100,10 +103,11 @@ AUDIOCPP_DEBUG = _env_bool("AUDIOCPP_DEBUG", False)
 
 
 # ── TTS 模型（audiocpp 族）────────────────────────────────
-# TTS_MODEL 切换模型（弱化单一模型绑定）：omnivoice / indextts2 / fireredtts3。
+# TTS_MODEL 切换模型（弱化单一模型绑定）：omnivoice / indextts2 / fireredtts3 /
+# cosyvoice3。
 # 各模型的 GGUF 文件与 HF 兜底仓库定义在对应模型核心
-# （src/omnivoice.py、src/indextts2.py、src/fireredtts3.py），本文件只放
-# 默认选择与本地目录。
+# （src/omnivoice.py、src/indextts2.py、src/fireredtts3.py、src/cosyvoice3.py），
+# 本文件只放默认选择与本地目录。
 TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 
 # ── 生成参数（各模型核心在拼 CLI 时消费；默认 = 官方基准，env 可覆盖）──
@@ -112,6 +116,8 @@ TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 # - IndexTTS-2.5：gpt 层 top-k 30 / top-p 0.8 / temperature 0.8 + 随机种子
 # - FireRedTTS-3 Base（零样本克隆）：flow 4 步 / CFG 2.0 / 停止阈值 0.5 +
 #   随机种子（不传种子时引擎固定 1234，可复现）
+# - CosyVoice-3（零样本克隆）：AR top-k 25 / flow 10 步 + 随机种子（不传时
+#   引擎固定 1986，可复现）
 # 设 0 / 空 / -1 可回到"不传 flag = 引擎默认"。
 OMNI_INFERENCE_STEPS = _env_int("OMNI_INFERENCE_STEPS", 32)  # 0 = 引擎默认
 OMNI_GUIDANCE_SCALE = _env("OMNI_GUIDANCE_SCALE", "2.0")     # 空 = 引擎默认
@@ -121,7 +127,19 @@ INDEXTTS_TEMPERATURE = _env("INDEXTTS_TEMPERATURE", "0.8")   # 空 = 引擎默�
 FIREREDTTS3_INFERENCE_STEPS = _env_int("FIREREDTTS3_INFERENCE_STEPS", 4)  # 0 = 引擎默认
 FIREREDTTS3_GUIDANCE_SCALE = _env("FIREREDTTS3_GUIDANCE_SCALE", "2.0")    # 空 = 引擎默认
 FIREREDTTS3_STOP_THRESHOLD = _env("FIREREDTTS3_STOP_THRESHOLD", "0.5")    # 空 = 引擎默认
+COSYVOICE3_TOP_K = _env_int("COSYVOICE3_TOP_K", 25)          # 0 = 引擎默认
+COSYVOICE3_INFERENCE_STEPS = _env_int("COSYVOICE3_INFERENCE_STEPS", 10)   # 0 = 引擎默认
 GEN_SEED = _env_int("GEN_SEED", -1)                          # -1 = 随机（不传 seed）
+
+# ── 长文本分块（引擎 --text-chunk-size / --text-chunk-mode）─────────
+# 超长文本一次性合成会产生吞字/x/啊等乱码：实测 OmniVoice 1027 字整段合成
+# 字符相似度仅 0.877，160 字分块后 0.982。vc 与 web 共用 src 分块逻辑
+# （src/audiocpp._chunk_flags），无需各自处理。
+TEXT_CHUNK_SIZE = _env_int("TEXT_CHUNK_SIZE", 160)  # 每块上限（字）；0 = 不分块
+# 分块模式：空 = 自动——输入按换行分段且每段 ≤ 上限时用 endline（以换行为
+# 界、段落完整），否则用 default（按标点/CJK 断句）。可显式设
+# endline / tag_aware / japanese / default。
+TEXT_CHUNK_MODE = _env("TEXT_CHUNK_MODE", "")
 
 # ── ASR（参考音频转写）：SenseVoice-Small（audiocpp sense_asr 族）──
 # 权重经 HF 下载（本地优先 + 镜像兜底）；注意该 GGUF 是 audiocpp 专用包

@@ -2,8 +2,8 @@
 统一编排层：vc.py / web.py 共用的完整合成流程。
 
 synthesize(): ASR 转写（clone 且缺 ref_text 时）→ TTS 模型 generate
-              （按 config.TTS_MODEL 分发 omnivoice / indextts2 / fireredtts3）
-              → 输出命名
+              （按 config.TTS_MODEL 分发 omnivoice / indextts2 / fireredtts3 /
+              cosyvoice3）→ 输出命名
               → 写 WAV → SynthesisResult（含 out_path / ASR 文本）。
 draw():       连续合成 N 次（抽卡），返回结果列表。
 
@@ -67,9 +67,12 @@ def _tts_generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
     if name in ("fireredtts3", "firered", "fireredtts3-base"):
         from .fireredtts3 import generate as _fr3
         return _fr3(cfg, logger, **kwargs)
+    if name in ("cosyvoice3", "cosy", "cosyvoice"):
+        from .cosyvoice3 import generate as _cv3
+        return _cv3(cfg, logger, **kwargs)
     raise ValueError(
-        f"未知 TTS_MODEL: {name}（支持 omnivoice / indextts2 / fireredtts3，"
-        "见 src/config.py 顶部 TTS_MODEL）")
+        f"未知 TTS_MODEL: {name}（支持 omnivoice / indextts2 / fireredtts3 / "
+        "cosyvoice3，见 src/config.py 顶部 TTS_MODEL）")
 
 
 def synthesize(
