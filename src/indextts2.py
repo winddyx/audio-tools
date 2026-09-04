@@ -4,8 +4,9 @@ IndexTTS-2.5 模型核心（audiocpp `--family index_tts2`）
 IndexTTS-2.5（IndexTeam/bilibili）多语言零样本 TTS：在 audio.cpp 中作为
 `index_tts2` 族的 variant 2.5 实现（model config version 字段区分），
 语音克隆走 `--task clon --voice-ref`。权重为 audio.cpp 专用 GGUF 包
-（audio-cpp/audio.cpp-gguf，index-tts2_5-q8_0/f16/orig），本地
-MODELS_DIR/IndexTTS2.5-GGUF/ 优先，缺失时经 HF 下载。
+（audio-cpp/audio.cpp-gguf，index-tts2_5-q8_0/f16/orig）。模型文件只在 HF
+默认缓存（~/.cache/huggingface/hub）：缺失时自动经 HF 下载并在缓存内生成
+引擎可用的 .gguf 别名（见 hf._ensure_gguf_file）；项目 models/ 仅支持手工放置。
 
 只做语音克隆（ref_audio 必填；参考文本转写省略时由 SenseVoice 提供）。
 """
@@ -26,12 +27,12 @@ from .config import (
     MODELS_DIR,
     TMP_DIR,
 )
-from .hf import _hf_download
+from .hf import _ensure_gguf_file
 
 # 模型族名（audiocpp --family 取值；2.0/2.5 共用 index_tts2，由模型 config 区分）
 FAMILY = "index_tts2"
 
-# 权重：本地路径优先；HF 仓库为下载兜底（默认 Q8_0 包，可换 f16/orig）
+# 权重：项目 models/ 仅支持手工放置；默认放 HF 缓存（引擎须真实 .gguf 路径）
 GGUF_LOCAL = os.path.join(MODELS_DIR, "IndexTTS2.5-GGUF", "index-tts2_5-q8_0.gguf")
 GGUF_HF_REPO = "audio-cpp/audio.cpp-gguf"
 GGUF_HF_FILE = "IndexTTS2.5-GGUF/index-tts2_5-q8_0.gguf"
@@ -65,12 +66,15 @@ def _gen_flags() -> list[str]:
 
 
 def _ensure_model(logger: logging.Logger) -> str:
-    """定位 IndexTTS2.5 GGUF：本地 MODELS_DIR 优先，缺失则 HF 下载。"""
+    """定位 IndexTTS2.5 GGUF：手工放置的本地文件优先，否则经 HF 下载。
+
+    audio.cpp 按真实文件扩展名识别 GGUF，HF 缓存 blob/软链路径不能直接用，
+    _ensure_gguf_file 会在 HF 默认缓存仓库目录内生成带 .gguf 的硬链接别名并
+    返回。模型不落工程目录（GGUF_LOCAL 仅支持用户手工放置）。
+    """
     if os.path.isfile(GGUF_LOCAL):
         return GGUF_LOCAL
-    logger.info("本地未找到 %s，从 HuggingFace 下载 %s/%s …",
-                GGUF_LOCAL, GGUF_HF_REPO, GGUF_HF_FILE)
-    return _hf_download(GGUF_HF_REPO, GGUF_HF_FILE)
+    return _ensure_gguf_file(GGUF_HF_REPO, GGUF_HF_FILE, logger)
 
 
 def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:

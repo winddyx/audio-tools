@@ -61,8 +61,9 @@ def _env_bool(name: str, default: bool) -> bool:
 class Config:
     """全局默认配置。可通过环境变量覆盖。"""
 
-    # ── 模型（本地优先；缺失时自动从 HuggingFace 下载到 HF 缓存）──
-    tts_model: str = ""       # "omnivoice" | "indextts2"；留空用 TTS_MODEL
+    # ── 模型（GGUF_LOCAL 手工放置优先；缺失自动经 HF 下载，文件留在 HF 默认缓存，
+    #    不落工程目录；引擎需要真实 .gguf 路径，见 hf._ensure_gguf_file）──
+    tts_model: str = ""       # "omnivoice" | "indextts2" | "fireredtts3"；留空用 TTS_MODEL
     device: str = ""          # 留空则自动检测（cuda > xpu > mps > cpu）
 
     # ── 生成模式（本期只做语音克隆）──
@@ -99,21 +100,27 @@ AUDIOCPP_DEBUG = _env_bool("AUDIOCPP_DEBUG", False)
 
 
 # ── TTS 模型（audiocpp 族）────────────────────────────────
-# TTS_MODEL 切换模型（弱化单一模型绑定）：omnivoice / indextts2。
+# TTS_MODEL 切换模型（弱化单一模型绑定）：omnivoice / indextts2 / fireredtts3。
 # 各模型的 GGUF 文件与 HF 兜底仓库定义在对应模型核心
-# （src/omnivoice.py、src/indextts2.py），本文件只放默认选择与本地目录。
+# （src/omnivoice.py、src/indextts2.py、src/fireredtts3.py），本文件只放
+# 默认选择与本地目录。
 TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 
 # ── 生成参数（各模型核心在拼 CLI 时消费；默认 = 官方基准，env 可覆盖）──
 # 默认值即各模型的官方基准（不改引擎质量/速度取舍，只是显式落在 config）：
 # - OmniVoice：去噪步数 32 / CFG 引导 2.0 + 随机种子
 # - IndexTTS-2.5：gpt 层 top-k 30 / top-p 0.8 / temperature 0.8 + 随机种子
+# - FireRedTTS-3 Base（零样本克隆）：flow 4 步 / CFG 2.0 / 停止阈值 0.5 +
+#   随机种子（不传种子时引擎固定 1234，可复现）
 # 设 0 / 空 / -1 可回到"不传 flag = 引擎默认"。
 OMNI_INFERENCE_STEPS = _env_int("OMNI_INFERENCE_STEPS", 32)  # 0 = 引擎默认
 OMNI_GUIDANCE_SCALE = _env("OMNI_GUIDANCE_SCALE", "2.0")     # 空 = 引擎默认
 INDEXTTS_TOP_K = _env_int("INDEXTTS_TOP_K", 30)              # 0 = 引擎默认
 INDEXTTS_TOP_P = _env("INDEXTTS_TOP_P", "0.8")               # 空 = 引擎默认
 INDEXTTS_TEMPERATURE = _env("INDEXTTS_TEMPERATURE", "0.8")   # 空 = 引擎默认
+FIREREDTTS3_INFERENCE_STEPS = _env_int("FIREREDTTS3_INFERENCE_STEPS", 4)  # 0 = 引擎默认
+FIREREDTTS3_GUIDANCE_SCALE = _env("FIREREDTTS3_GUIDANCE_SCALE", "2.0")    # 空 = 引擎默认
+FIREREDTTS3_STOP_THRESHOLD = _env("FIREREDTTS3_STOP_THRESHOLD", "0.5")    # 空 = 引擎默认
 GEN_SEED = _env_int("GEN_SEED", -1)                          # -1 = 随机（不传 seed）
 
 # ── ASR（参考音频转写）：SenseVoice-Small（audiocpp sense_asr 族）──

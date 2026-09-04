@@ -12,6 +12,12 @@ OmniVoice 配音工具 — HuggingFace 下载与缓存管理
 4. 直连 huggingface.co 失败（超时等）且未显式设置 HF_ENDPOINT 时，
    自动改用 hf-mirror.com 镜像重试一次；HF_NO_MIRROR_FALLBACK=1 可关闭。
 5. 下载保留 huggingface_hub 默认进度条（不设 HF_HUB_DISABLE_PROGRESS_BARS）。
+6. 模型一律留在 HuggingFace 默认缓存，不下载/复制到工程目录（项目的
+   models/ 仅供用户手工放置，自动下载不落项目内）。audio.cpp 引擎按真实
+   文件扩展名识别权重格式（内部 canonical 解析），HF 缓存 blobs/ 是哈希
+   文件名无扩展名、snapshots/ 软链会被还原成 blob，都不能直接喂给引擎；
+   下载后在 HF 缓存仓库目录内生成带 .gguf 扩展名的硬链接别名（见
+   _ensure_gguf_file），此后直接命中该别名。
 """
 
 from __future__ import annotations
@@ -98,6 +104,39 @@ def _hf_download(repo_id: str, filename: str = "") -> str:
         except Exception as e2:
             logger.error("镜像 %s 下载 %s 也失败: %s", _HF_MIRROR, repo_id, e2)
             raise
+
+
+def _cache_repo_dir(repo_id: str) -> str:
+    """HF 默认缓存中该仓库的目录（用 huggingface_hub 常量，不硬编码缓存路径）。"""
+    from huggingface_hub import constants as hf_constants
+    return os.path.join(hf_constants.HF_HUB_CACHE, "models--" + repo_id.replace("/", "--"))
+
+
+def _ensure_gguf_file(repo_id: str, filename: str,
+                      logger: logging.Logger | None = None) -> str:
+    """下载/定位模型，返回能直接喂给引擎的真实 .gguf 路径（在 HF 默认缓存内）。
+
+    audio.cpp 按真实文件扩展名识别权重格式并做 canonical 解析：HF 缓存
+    blobs/ 是哈希文件名（无扩展名）、snapshots/ 软链会被解析回 blob，均
+    不能直接作为 --model。本函数在 HF 缓存仓库目录内生成带原 .gguf 文件名
+    的硬链接别名（与 blob 同 inode、不占额外空间；跨文件系统退化为复制），
+    返回该别名路径。模型不落工程目录；项目 models/ 仅供用户手工放置。
+    """
+    alias = os.path.join(_cache_repo_dir(repo_id), os.path.basename(filename))
+    if os.path.isfile(alias):
+        return alias
+    if logger is not None:
+        logger.info("本地未找到可用 GGUF，从 HuggingFace 下载 %s/%s …",
+                    repo_id, filename)
+    src = _hf_download(repo_id, filename)
+    os.makedirs(os.path.dirname(alias), exist_ok=True)
+    real = os.path.realpath(src)
+    try:
+        os.link(real, alias)
+    except OSError:
+        import shutil
+        shutil.copy2(real, alias)
+    return alias
 
 
 def resolve_path(model_id: str = "", local_path: str = "") -> str:

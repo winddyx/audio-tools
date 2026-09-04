@@ -2,7 +2,7 @@
 
 语音克隆工具：参考音频 + 文本 → 克隆音色朗读。推理由 [audio.cpp](https://github.com/0xShug0/audio.cpp)
 （ggml C++ 引擎，`audiocpp_cli`）子进程完成，Python 只做编排。多 TTS 模型可切换
-（`TTS_MODEL`：omnivoice / indextts2），ASR 用 SenseVoice-Small 自动转写参考音频。
+（`TTS_MODEL`：omnivoice / indextts2 / fireredtts3），ASR 用 SenseVoice-Small 自动转写参考音频。
 只做语音克隆，不做声音设计/自动音色。
 
 ## Project
@@ -33,11 +33,14 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   （纯平台探测 cuda>xpu>mps>cpu，darwin arm64→mps）+ `_quiet_hf_logs()`。所有常量 `_env(...)`
   可覆盖；**无 torch**。
 - `audiocpp.py` — 模型无关引擎运行器：`_ensure_binary()`（AUDIOCPP_BIN→glob vendor/build/*
-  →自动 `_clone_and_build()` custom 三族 omnivoice,index_tts2,sense_asr）、device→`--backend`
+  →自动 `_clone_and_build()` custom 四族 omnivoice,index_tts2,sense_asr,fireredtts3）、
+  device→`--backend`
   映射（cuda/metal/cpu，""→best，xpu→cpu）、`run_cli()`（GPU 初始化失败自动 CPU 重试、
   `AUDIOCPP_DEBUG` 透传 stdout/stderr）、`_run_quiet()`（须传 env）。
-- `omnivoice.py` / `indextts2.py` — TTS 模型核心，各含 `_ensure_model(logger)`（本地
-  MODELS_DIR 优先→HF `audio-cpp/audio.cpp-gguf`）与 `generate(cfg, logger, **kwargs)` →
+- `omnivoice.py` / `indextts2.py` / `fireredtts3.py` — TTS 模型核心，各含
+  `_ensure_model(logger)`（本地
+  手工放置优先，缺失经 HF 下载 `audio-cpp/audio.cpp-gguf` 且文件留在 HF 默认缓存）与
+  `generate(cfg, logger, **kwargs)` →
   `AudioResult(audio: np.ndarray, sampling_rate, chunks)`。GGUF/族常量在各自文件。
 - `sensevoice.py` — ASR 核心：`_transcribe_ref(cfg, logger)`（16 kHz mono 自动重采样；
   audiocpp sense_asr 族；**须以 cwd=audiocpp 仓库根运行**，silero_vad 相对路径）；解析
@@ -73,6 +76,12 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   synthesize 内部定位/自动构建/下载，点击结束（finally）调 `pipeline.release()`（清
   audiocpp `_BINARY_CACHE`）——模型本就在 audiocpp_cli 子进程内按次加载、退出即卸载，
   Python 侧不留常驻资源，长时间运行无需重启。
+- **模型只在 HF 默认缓存，不落工程目录**：模型经 HF 下载后一律留在默认缓存
+  （~/.cache/huggingface/hub，遵循 HF_HOME/HF_HUB_CACHE）；工程 models/（GGUF_LOCAL）
+  仅支持用户手工放置，自动下载绝不写入。audio.cpp 按真实文件扩展名识别权重（内部
+  canonical 解析）：blobs/ 哈希名无扩展名、snapshots/ 软链被还原成 blob，都会报
+  `unsupported tensor source format`；`hf._ensure_gguf_file` 在 HF 缓存仓库目录内
+  硬链接生成带 .gguf 的别名（同 inode 不占空间，跨盘退复制）再返回给引擎。
 
 ## Notes
 

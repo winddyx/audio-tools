@@ -7,8 +7,10 @@ FunAudioLLM/SenseVoice-Small 的多语言语音转写（23 语言标签 + 事件
 （本模块内部自动重采样）。
 
 权重为 audiocpp 专用 GGUF 包
-（FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp，sensevoice-small-q8-audiocpp-v1.gguf），
-本地 MODELS_DIR/SenseVoice-Small-GGUF/ 优先，缺失时经 HF 下载。
+（FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp，sensevoice-small-q8-audiocpp-v1.gguf）。
+模型文件只在 HF 默认缓存（~/.cache/huggingface/hub）：缺失时自动经 HF 下载并
+在缓存内生成引擎可用的 .gguf 别名（见 hf._ensure_gguf_file）；项目 models/ 仅
+支持手工放置。
 
 供语音克隆参考音频转写与 `--transcribe` 子命令共用。
 """
@@ -27,20 +29,23 @@ from .config import (
     MODELS_DIR,
     TMP_DIR,
 )
-from .hf import _hf_download
+from .hf import _ensure_gguf_file
 
 GGUF_LOCAL = os.path.join(MODELS_DIR, "SenseVoice-Small-GGUF", ASR_GGUF_BASE)
 
 
 def _ensure_model(logger: logging.Logger) -> str:
-    """定位 SenseVoice GGUF：本地 MODELS_DIR 优先，缺失则 HF 下载。"""
+    """定位 SenseVoice GGUF：手工放置的本地文件优先，否则经 HF 下载。
+
+    audio.cpp 按真实文件扩展名识别 GGUF，HF 缓存 blob/软链路径不能直接用，
+    _ensure_gguf_file 会在 HF 默认缓存仓库目录内生成带 .gguf 的硬链接别名并
+    返回。模型不落工程目录（GGUF_LOCAL 仅支持用户手工放置）。
+    """
     if os.path.isfile(GGUF_LOCAL):
         return GGUF_LOCAL
     if os.environ.get("ASR_GGUF_LOCAL") and os.path.isfile(os.environ["ASR_GGUF_LOCAL"]):
         return os.environ["ASR_GGUF_LOCAL"]
-    logger.info("本地未找到 %s，从 HuggingFace 下载 %s/%s …",
-                GGUF_LOCAL, ASR_GGUF_REPO, ASR_GGUF_BASE)
-    return _hf_download(ASR_GGUF_REPO, ASR_GGUF_BASE)
+    return _ensure_gguf_file(ASR_GGUF_REPO, ASR_GGUF_BASE, logger)
 
 
 def _to_16k_mono(src: str, dst: str) -> None:

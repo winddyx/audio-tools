@@ -252,6 +252,8 @@ def _prepare_models(cfg: Config, logger: logging.Logger, *, need_asr: bool) -> N
         from src.omnivoice import _ensure_model as _m
     elif tts_name.startswith("indextts"):
         from src.indextts2 import _ensure_model as _m
+    elif tts_name.startswith("firered"):
+        from src.fireredtts3 import _ensure_model as _m
     else:
         logger.warning("  未知 TTS_MODEL %s，跳过模型准备", tts_name)
         return

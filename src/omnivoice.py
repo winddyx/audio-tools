@@ -3,8 +3,9 @@ OmniVoice 模型核心（audiocpp `--family omnivoice`）
 
 k2-fsa/OmniVoice 的多语言零样本 TTS（600+ 语言），在 audio.cpp 中支持
 语音克隆（`--voice-ref` + `--reference-text`）。权重为 audio.cpp 专用单文件
-GGUF 包（audio-cpp/audio.cpp-gguf，omnivoice-bf16/f16/q8_0），本地
-MODELS_DIR/OmniVoice-GGUF/ 优先，缺失时经 HF 下载。
+GGUF 包（audio-cpp/audio.cpp-gguf，omnivoice-bf16/f16/q8_0）。模型文件只在
+HF 默认缓存（~/.cache/huggingface/hub）：缺失时自动经 HF 下载并在缓存内生成
+引擎可用的 .gguf 别名（见 hf._ensure_gguf_file）；项目 models/ 仅支持手工放置。
 
 只做语音克隆（ref_audio + ref_text 必填）；声音设计（design/instruct）不在
 本版本范围内。
@@ -25,12 +26,12 @@ from .config import (
     OMNI_INFERENCE_STEPS,
     TMP_DIR,
 )
-from .hf import _hf_download
+from .hf import _ensure_gguf_file
 
 # 模型族名（audiocpp --family 取值）
 FAMILY = "omnivoice"
 
-# 权重：本地路径优先；HF 仓库为下载兜底
+# 权重：项目 models/ 仅支持手工放置；默认放 HF 缓存（引擎须真实 .gguf 路径）
 GGUF_LOCAL = os.path.join(MODELS_DIR, "OmniVoice-GGUF", "omnivoice-bf16.gguf")
 GGUF_HF_REPO = "audio-cpp/audio.cpp-gguf"
 GGUF_HF_FILE = "OmniVoice-GGUF/omnivoice-bf16.gguf"
@@ -63,12 +64,15 @@ def _opt_value(k: str, kwargs: dict) -> str | None:
 
 
 def _ensure_model(logger: logging.Logger) -> str:
-    """定位 OmniVoice GGUF：本地 MODELS_DIR 优先，缺失则 HF 下载。"""
+    """定位 OmniVoice GGUF：手工放置的本地文件优先，否则经 HF 下载。
+
+    audio.cpp 按真实文件扩展名识别 GGUF，HF 缓存 blob/软链路径不能直接用，
+    _ensure_gguf_file 会在 HF 默认缓存仓库目录内生成带 .gguf 的硬链接别名并
+    返回。模型不落工程目录（GGUF_LOCAL 仅支持用户手工放置）。
+    """
     if os.path.isfile(GGUF_LOCAL):
         return GGUF_LOCAL
-    logger.info("本地未找到 %s，从 HuggingFace 下载 %s/%s …",
-                GGUF_LOCAL, GGUF_HF_REPO, GGUF_HF_FILE)
-    return _hf_download(GGUF_HF_REPO, GGUF_HF_FILE)
+    return _ensure_gguf_file(GGUF_HF_REPO, GGUF_HF_FILE, logger)
 
 
 def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:

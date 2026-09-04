@@ -39,7 +39,7 @@ uv run python web.py
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `TTS_MODEL` | `omnivoice` | TTS 模型：`omnivoice` / `indextts2` |
+| `TTS_MODEL` | `omnivoice` | TTS 模型：`omnivoice` / `indextts2` / `fireredtts3` |
 | `LANGUAGE` | 空 | 合成语言（如 `zh` / `en` / `yue`）；空 = 自动 |
 | `DRAW_COUNT` | `2` | 抽卡次数 |
 | `OUTPUT_DIR` | 文本所在目录 | CLI 输出目录 |

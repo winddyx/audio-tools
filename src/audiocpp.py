@@ -93,8 +93,9 @@ def _clone_and_build(logger: logging.Logger) -> None:
         _run_quiet(["git", "clone", "--depth", "1", AUDIOCPP_REPO, src_dir],
                    "git clone audio.cpp", logger, env=env)
 
-    # 只构建本项目的模型族，避免全套 62+ 族（耗时/体积）
-    models = "omnivoice,index_tts2,sense_asr"
+    # 只构建本项目的模型族，避免全套 60+ 族（耗时/体积）
+    # fireredtts3（FireRedTTS-3 Base）零样本语音克隆，见 src/fireredtts3.py
+    models = "omnivoice,index_tts2,sense_asr,fireredtts3"
     args = [
         "-S", src_dir, "-B", os.path.join(src_dir, "build", "audiocpp"),
         "-DCMAKE_BUILD_TYPE=Release",
