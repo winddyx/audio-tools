@@ -185,10 +185,10 @@ def _model_gen_kwargs(model_v, omni_s, omni_c, it2_k, it2_p, it2_t,
 def build_demo() -> gr.Blocks:
     os.makedirs(_TMP_DIR, exist_ok=True)
 
-    with gr.Blocks(title="audio-tools — 语音克隆",
+    with gr.Blocks(title="audio-tools",
                    analytics_enabled=False) as demo:
         gr.Markdown(
-            "# audio-tools 语音克隆\n"
+            "# audio-tools made by David \n"
             "参考音频 + 文本 → 语音克隆。模型在下方「配置」页选择，"
             "当前默认: " + (TTS_MODEL or "omnivoice") + "。"
         )
