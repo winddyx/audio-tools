@@ -69,6 +69,10 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
 - 六阶段流程（CLI 与 Web 同构）：环境准备→模型准备→输入文件检查→ASR→VOICECLONE→
   输出文件规范；vc.py 终端以 `[i/6]` 显示，长合成每 10s 心跳报进度。
 - `_run_quiet`/`run_cli` 失败抛 `RuntimeError` 带 stderr 尾部诊断（≈60 行），不在入口裸奔。
+- **web 引擎/模型按需加载**：web.py 启动只启动 UI（无预热）；引擎/模型在点击"生成"时才由
+  synthesize 内部定位/自动构建/下载，点击结束（finally）调 `pipeline.release()`（清
+  audiocpp `_BINARY_CACHE`）——模型本就在 audiocpp_cli 子进程内按次加载、退出即卸载，
+  Python 侧不留常驻资源，长时间运行无需重启。
 
 ## Notes
 

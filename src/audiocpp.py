@@ -154,6 +154,18 @@ def _ensure_binary(logger: logging.Logger) -> str:
     return _BINARY_CACHE
 
 
+def release_engine() -> None:
+    """释放引擎进程内状态（二进制路径缓存）。
+
+    引擎本体（audiocpp_cli）与模型权重每次生成都是独立子进程、退出即
+    卸载，Python 侧本无常驻对象；这里清掉路径缓存，保证长时间运行的
+    web 两次请求之间进程内不残留任何引擎状态，下次生成会重新探测
+    二进制（已构建产物仍在，重新定位只是毫秒级 glob）。
+    """
+    global _BINARY_CACHE
+    _BINARY_CACHE = None
+
+
 # ── 设备 → --backend ──────────────────────────────────────
 
 def _backend_flag(device: str) -> str:

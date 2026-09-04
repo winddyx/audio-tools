@@ -6,6 +6,12 @@ audio-tools Web Demo — Gradio 单页语音克隆
 TTS 模型核心 + SenseVoice ASR；本文件只做 UI 封装）。本期只做语音克隆
 （ref_audio + text → 多轮抽卡），无音色设计。
 
+引擎与模型按需加载：启动只启动 Web 界面，不做任何预热；首次点击"生成"
+时 synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日志可见），
+每次点击生成结束立即释放引擎进程内状态（src/pipeline.release()），
+长时间运行不留存任何引擎/模型（模型本就在 audiocpp_cli 子进程内按次
+加载，子进程退出即卸载）。
+
 用法:
     uv run python web.py
 
@@ -35,7 +41,7 @@ from src.config import (
     WEB_IP,
     WEB_PORT,
 )
-from src.pipeline import synthesize
+from src.pipeline import release, synthesize
 
 logger = logging.getLogger("audio-tools-web")
 
@@ -45,9 +51,6 @@ _MAX_DRAWS = 8
 # 生成临时目录：项目根目录下 .tmp（正常退出时 atexit 清理）
 _TMP_DIR = TMP_DIR
 atexit.register(shutil.rmtree, _TMP_DIR, ignore_errors=True)
-
-# 启动预热：确保引擎与模型就绪（首次会自动构建/下载）
-_PRELOAD_TTS = True
 
 
 def _cleanup_leftover_tmp() -> None:
@@ -158,23 +161,31 @@ def build_demo() -> gr.Blocks:
                     ts = int(time.time())
                     results: list = []
                     asr = ""
-                    for i in range(draw_count_v):
-                        out, msg, asr = _gen_core(
-                            text=text_v, language=lang_v, ref_audio=ref_aud,
-                            ref_text=ref_txt, out_name=f"{ts}-{i + 1}",
-                        )
-                        if out is None:
-                            return (*([gr.update()] * _MAX_DRAWS),
-                                    gr.update(value=asr), msg)
-                        results.append(out)
-                    slots = [
-                        gr.update(visible=True, value=results[i])
-                        if i < draw_count_v
-                        else gr.update(visible=False)
-                        for i in range(_MAX_DRAWS)
-                    ]
-                    return (*slots, gr.update(value=asr),
-                            f"生成完成 共 {draw_count_v} 个结果")
+                    try:
+                        for i in range(draw_count_v):
+                            out, msg, asr = _gen_core(
+                                text=text_v, language=lang_v, ref_audio=ref_aud,
+                                ref_text=ref_txt, out_name=f"{ts}-{i + 1}",
+                            )
+                            if out is None:
+                                return (*([gr.update()] * _MAX_DRAWS),
+                                        gr.update(value=asr), msg)
+                            results.append(out)
+                        slots = [
+                            gr.update(visible=True, value=results[i])
+                            if i < draw_count_v
+                            else gr.update(visible=False)
+                            for i in range(_MAX_DRAWS)
+                        ]
+                        return (*slots, gr.update(value=asr),
+                                f"生成完成 共 {draw_count_v} 个结果")
+                    finally:
+                        # 生成完（无论成败）立即卸载引擎/模型进程内状态：
+                        # 模型本就在 audiocpp_cli 子进程内按次加载、退出即
+                        # 卸载；此处清掉 Python 侧二进制路径缓存，保证两次
+                        # 点击之间进程内不残留任何引擎状态（下次点击重新
+                        # 探测），长时间运行不积攒资源。
+                        release()
 
                 btn.click(
                     _clone_fn,
@@ -197,22 +208,13 @@ def main() -> int:
     _quiet_hf_logs()
     _cleanup_leftover_tmp()
 
+    # 启动只启动 Web，引擎/模型不做预热：首次点击"生成"时 synthesize 内部
+    # 才定位/自动构建引擎、定位/下载模型 GGUF（见 src/audiocpp.py 与各模型
+    # 核心的 _ensure_binary/_ensure_model），生成完立即释放（_clone_fn 的
+    # finally 调 pipeline.release()）。设备仅做平台探测，不加载任何资源。
     from src import get_best_device
     _DEVICE = os.environ.get("DEVICE", "") or get_best_device()
-    cfg = Config(tts_model=TTS_MODEL, device=_DEVICE)
-
-    if _PRELOAD_TTS:
-        # 启动预热：构建/定位引擎与模型（首次自动 clone+cmake/下载），
-        # 避免首个请求长时间无响应；后续请求全部走进程内缓存
-        logger.info("预热 TTS 模型（%s，设备 %s）…", cfg.tts_model, _DEVICE)
-        from src.audiocpp import _ensure_binary
-        _ensure_binary(logger)
-        tts = (cfg.tts_model or "omnivoice").strip().lower()
-        if tts.startswith("indextts"):
-            from src.indextts2 import _ensure_model as _m
-        else:
-            from src.omnivoice import _ensure_model as _m
-        _m(logger)
+    logger.info("设备: %s（引擎/模型按需加载，启动不预热）", _DEVICE)
 
     demo = build_demo()
     url = f"http://localhost:{WEB_PORT}"

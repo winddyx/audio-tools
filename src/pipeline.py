@@ -134,3 +134,18 @@ def synthesize(
 def draw(cfg: Config, logger: logging.Logger, count: int, **kwargs) -> list[SynthesisResult]:
     """连续合成 count 次（抽卡），返回结果列表。"""
     return [synthesize(cfg, logger, **kwargs) for _ in range(count)]
+
+
+def release() -> None:
+    """释放引擎/模型相关进程内状态（web 每次生成结束后调用）。
+
+    引擎（audiocpp_cli）与模型权重在子进程内按次加载、进程退出即卸载，
+    Python 侧无常驻模型对象；此处清掉引擎二进制路径缓存，使长时间运行
+    的 web 不跨请求残留任何引擎状态（下一次点击重新探测即可）。
+
+    不清理 _ASR_TEXT_CACHE：它只是参考音频的转写文本字符串（供同音频
+    多轮抽卡/重复点击跳过重复 ASR），不是引擎/模型，且键含文件 mtime，
+    不会无限增长。CLI（vc.py）为一次性进程，无需调用。
+    """
+    from .audiocpp import release_engine
+    release_engine()
