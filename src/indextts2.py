@@ -17,7 +17,15 @@ import os
 import tempfile
 
 from .audiocpp import AudioResult, _backend_flag, _ensure_binary, ensure_tmp_dir, run_cli
-from .config import Config, MODELS_DIR, TMP_DIR
+from .config import (
+    Config,
+    GEN_SEED,
+    INDEXTTS_TEMPERATURE,
+    INDEXTTS_TOP_K,
+    INDEXTTS_TOP_P,
+    MODELS_DIR,
+    TMP_DIR,
+)
 from .hf import _hf_download
 
 # 模型族名（audiocpp --family 取值；2.0/2.5 共用 index_tts2，由模型 config 区分）
@@ -30,6 +38,30 @@ GGUF_HF_FILE = "IndexTTS2.5-GGUF/index-tts2_5-q8_0.gguf"
 
 # 仅支持 zh / en（IndexTTS2.5 默认语言集）
 _SUPPORTED_LANGS = {"", "zh", "en"}
+
+# 生成参数 → audiocpp CLI 参数映射（config 顶部常量；空值 = 不传 = 引擎默认）
+# IndexTTS-2.5 的 gpt 层采样参数（引擎默认 top_k=30 / top_p=0.8 / temperature=0.8）
+_OPT_MAP = {
+    "top_k": ("--top-k", INDEXTTS_TOP_K),                    # int
+    "top_p": ("--top-p", INDEXTTS_TOP_P),                    # float
+    "temperature": ("--temperature", INDEXTTS_TEMPERATURE),  # float
+    "seed": ("--seed", GEN_SEED),                            # int; -1 = 不传
+}
+
+
+def _gen_flags() -> list[str]:
+    """把非空的生成参数常量拼成 CLI flag 列表（0/空/-1 = 引擎默认，不发）。"""
+    flags: list[str] = []
+    for k, (flag, v) in _OPT_MAP.items():
+        if v is None or v == "":
+            continue
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if k == "seed" and int(v) < 0:
+                continue            # -1 = 随机
+            if k == "top_k" and int(v) <= 0:
+                continue            # 0 = 引擎默认
+        flags += [flag, str(v)]
+    return flags
 
 
 def _ensure_model(logger: logging.Logger) -> str:
@@ -45,7 +77,8 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
     """IndexTTS-2.5 语音克隆：ref_audio（+ref_text 可选）→ 音频。
 
     kwargs 支持：text / language（zh|en）/ ref_audio / ref_text（可选）。
-    输出采样率 22.05 kHz（以产出 wav 实际为准）。
+    生成参数 top_k / top_p / temperature / seed 走 config.py 顶部常量
+    （空值 = 引擎默认）。输出采样率 22.05 kHz（以产出 wav 实际为准）。
     """
     text = kwargs.pop("text", "")
     language = kwargs.pop("language", None)
@@ -70,6 +103,8 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
                "--text", text, "--voice-ref", ref_audio, "--out", out_wav]
         if language:
             cmd += ["--language", str(language)]
+        # 生成参数：config 顶部常量（0/空/-1 = 引擎默认，不发 flag）
+        cmd += _gen_flags()
         if kwargs:
             logger.info("IndexTTS-2.5 不支持以下生成参数，已忽略: %s",
                         ", ".join(sorted(str(k) for k in kwargs)))

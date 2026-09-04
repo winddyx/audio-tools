@@ -17,7 +17,14 @@ import os
 import tempfile
 
 from .audiocpp import AudioResult, _ensure_binary, ensure_tmp_dir, run_cli
-from .config import Config, MODELS_DIR, TMP_DIR
+from .config import (
+    Config,
+    GEN_SEED,
+    MODELS_DIR,
+    OMNI_GUIDANCE_SCALE,
+    OMNI_INFERENCE_STEPS,
+    TMP_DIR,
+)
 from .hf import _hf_download
 
 # 模型族名（audiocpp --family 取值）
@@ -28,11 +35,31 @@ GGUF_LOCAL = os.path.join(MODELS_DIR, "OmniVoice-GGUF", "omnivoice-bf16.gguf")
 GGUF_HF_REPO = "audio-cpp/audio.cpp-gguf"
 GGUF_HF_FILE = "OmniVoice-GGUF/omnivoice-bf16.gguf"
 
-# 生成参数 → audiocpp CLI 参数映射（支持子集；其余忽略并提示）
+# 生成参数 → audiocpp CLI 参数映射（每调用 kwargs 优先，其次 config 顶部常量；
+# 其余未知参数忽略并提示）
 _OPT_MAP = {
-    "num_inference_steps": "--num-inference-steps",   # int
-    "guidance_scale": "--guidance-scale",             # float
+    "num_inference_steps": ("--num-inference-steps", OMNI_INFERENCE_STEPS),  # int
+    "guidance_scale": ("--guidance-scale", OMNI_GUIDANCE_SCALE),             # float
+    "seed": ("--seed", GEN_SEED),                                            # int; -1 = 不传
 }
+
+
+def _opt_value(k: str, kwargs: dict) -> str | None:
+    """取某生成参数值：调用方 kwargs 优先；无则 config 顶部常量；空/0/-1 = 不传。"""
+    flag, default = _OPT_MAP[k]
+    if k in kwargs and kwargs[k] is not None:
+        v = kwargs[k]
+    else:
+        v = default
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        if k == "seed" and int(v) < 0:
+            return None          # -1 = 随机
+        if k == "num_inference_steps" and int(v) <= 0:
+            return None          # 0 = 引擎默认
+        return str(v)
+    return str(v)
 
 
 def _ensure_model(logger: logging.Logger) -> str:
@@ -47,9 +74,10 @@ def _ensure_model(logger: logging.Logger) -> str:
 def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
     """OmniVoice 语音克隆：ref_audio + ref_text → 音频。
 
-    kwargs 支持：text / language / ref_audio / ref_text /
-    num_inference_steps / guidance_scale（GGUF 后端参数名子集）。
-    输出采样率 24 kHz（以产出 wav 实际为准）。
+    kwargs 支持：text / language / ref_audio / ref_text / 生成参数
+    （num_inference_steps / guidance_scale / seed，kwargs 优先，缺省用
+    config.py 顶部常量；空值 = 引擎默认）。输出采样率 24 kHz（以产出
+    wav 实际为准）。
     """
     text = kwargs.pop("text", "")
     language = kwargs.pop("language", None)
@@ -74,10 +102,13 @@ def generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
                "--reference-text", ref_text, "--out", out_wav]
         if language:
             cmd += ["--language", str(language)]
-        for k, flag in _OPT_MAP.items():
-            if k in kwargs and kwargs[k] is not None:
-                cmd += [flag, str(kwargs[k])]
-        ignored = set(kwargs) - set(_OPT_MAP)
+        # 生成参数：kwargs 优先 → config 顶部常量兜底；空值不发 flag
+        for k in _OPT_MAP:
+            v = _opt_value(k, kwargs)
+            if v is not None:
+                cmd += [_OPT_MAP[k][0], v]
+        ignored = set(kwargs) - set(_OPT_MAP) - {"text", "language",
+                                                 "ref_audio", "ref_text"}
         if ignored:
             logger.info("OmniVoice 不支持以下生成参数，已忽略: %s",
                         ", ".join(sorted(str(x) for x in ignored)))

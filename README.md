@@ -44,6 +44,10 @@ uv run python web.py
 | `DRAW_COUNT` | `2` | 抽卡次数 |
 | `OUTPUT_DIR` | 文本所在目录 | CLI 输出目录 |
 | `DEVICE` | 自动 | `cuda` / `mps` / `cpu`（audiocpp 后端映射） |
+| `OMNI_INFERENCE_STEPS` | `0` | OmniVoice 去噪步数（0 = 引擎默认 32） |
+| `OMNI_GUIDANCE_SCALE` | 空 | OmniVoice CFG 引导尺度（空 = 引擎默认 2.0） |
+| `INDEXTTS_TOP_K` / `INDEXTTS_TOP_P` / `INDEXTTS_TEMPERATURE` | `0` / 空 / 空 | IndexTTS-2.5 gpt 层采样参数（默认 30 / 0.8 / 0.8） |
+| `GEN_SEED` | `-1` | 固定随机种子（`-1` = 随机；设同值可复现结果） |
 | `AUDIOCPP_BIN` / `AUDIOCPP_SRC` | 空 | 已编译二进制 / 已有源码（留空自动构建到 vendor/） |
 | `ASR_MODEL` | 空 | 本地 SenseVoice GGUF 路径（默认经 HF 下载） |
 | `WEB_IP` / `WEB_PORT` | `0.0.0.0` / `38001` | Web 监听 |
