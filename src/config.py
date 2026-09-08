@@ -178,6 +178,46 @@ WEB_PORT = _env_int("AUDIOTOOLS_WEB_PORT", 38001)
 WEB_AUTO_OPEN_BROWSER = _env_bool("AUDIOTOOLS_WEB_OPEN_BROWSER", False)
 
 
+# ── LLM 文案翻译：Hy-MT2-1.8B（腾讯开源翻译模型，llama.cpp 子进程）──
+# 用途：普通话/中文文案 → 粤语口播文案（作为 TTS 输入前的文案处理）。
+# Hy-MT2 官方支持粤语（yue）互译；本模块用本机 llama-cli 子进程推理，
+# Python 只做编排。模型经 HF 下载只留默认缓存（见 src/hf），工程目录
+# 不落盘；HYMT2_LOCAL 可手工放置本地 .gguf（本地优先）。
+HYMT2_REPO = _env("HYMT2_REPO", "tencent/Hy-MT2-1.8B-GGUF")
+HYMT2_FILE = _env("HYMT2_FILE", "Hy-MT2-1.8B-Q8_0.gguf")  # 仓库另备 Q4_K_M / Q6_K
+HYMT2_LOCAL = _env("HYMT2_LOCAL", "")     # 手工放置的 .gguf 绝对路径（优先）
+# llama.cpp 单次补全可执行名或绝对路径。新版 llama.cpp（ggml >= 0.10）把
+# 单次补全拆到 llama-completion（llama-cli 只做对话，不支持 --no-conversation）；
+# 旧版可用 llama-cli / llama-simple。brew install llama.cpp 自带。
+LLAMA_CLI = _env("LLAMA_CLI", "llama-completion")
+# 采样参数默认 = 腾讯官方推荐（temp 0.7 / top-p 0.6 / top-k 20 / rep 1.05）
+HYMT2_TEMPERATURE = _env("HYMT2_TEMPERATURE", "0.7")
+HYMT2_TOP_P = _env("HYMT2_TOP_P", "0.6")
+HYMT2_TOP_K = _env_int("HYMT2_TOP_K", 20)              # 0 = 关闭 top-k
+HYMT2_REPETITION_PENALTY = _env("HYMT2_REPETITION_PENALTY", "1.05")
+HYMT2_MAX_TOKENS = _env_int("HYMT2_MAX_TOKENS", 4096)  # 每段输出 token 上限
+HYMT2_CHUNK_CHARS = _env_int("HYMT2_CHUNK_CHARS", 1500)  # 长文按段分块上限（字）；0 = 不分块
+HYMT2_TIMEOUT = _env_int("HYMT2_TIMEOUT", 600)         # 单次推理超时（秒）
+# 设备：留空 = 交给 llama-completion 自行选择（当前 brew 版本在 M4 上 Metal
+# 张量 API 未启用，实际走 CPU，速度已够）；cpu = 强制不卸载 GPU（--device none）。
+HYMT2_DEVICE = _env("HYMT2_DEVICE", "")
+# 粤语翻译默认提示词模板（web「粤语翻译」页右侧提示词框的初始内容，
+# 可编辑；运行时把 {text} 替换为输入源文案；不含 {text} 时直接拼接在末尾）。
+# 用 Hy-MT2 官方"参考翻译"（术语/少样本）指令格式：先给 5 条与领域无关的
+# 粤语对照示例再下达翻译任务，实测比"默认翻译/风格"两种格式更少退化回
+# 普通话（1.8B 模型指令遵循有限，示例能显著提升口语化程度）。
+HYMT2_PROMPT = (
+    "参考下面的翻译：\n"
+    "我们住在这里很多年了 翻译成 我哋喺呢度住咗好多年喇\n"
+    "这个设计看起来很漂亮 翻译成 呢个设计睇落好靓\n"
+    "我们觉得住得很舒服 翻译成 我哋觉得住得好舒服\n"
+    "客厅的窗户对着马场 翻译成 客厅个窗对住马场\n"
+    "业主希望空间安静一点 翻译成 户主希望个空间静啲\n"
+    "将以下文本翻译为 粤语，注意只需要输出翻译后的结果，不要额外解释：\n\n"
+    "{text}"
+)
+
+
 # ── 设备检测（无 torch：纯平台探测 + 引擎能力）─────────────
 def get_best_device() -> str:
     """自动检测最佳可用设备（cuda > xpu > mps > cpu）。

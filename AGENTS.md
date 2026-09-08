@@ -9,7 +9,7 @@ SenseVoice-Small 自动转写参考音频。
 ## Project
 
 - Python >=3.10，仅 uv 管理（`uv sync` / `uv run`，禁 pip/venv/poetry）
-- 入口：`vc.py`（CLI）、`web.py`（Gradio 双 Tab：生成 / 配置），共用 `src/` 包
+- 入口：`vc.py`（CLI）、`web.py`（Gradio 三 Tab：生成 / 配置 / 粤语翻译），共用 `src/` 包
 - 推理全在 C++ 侧；Python 无 torch/torchaudio 依赖
 - 仓库是个人 fork，push 走 `origin main`；绝不向上游（audio.cpp 等）提交 PR/issue
 - 本地分支 `v1` = 旧 omnivoice.cpp 引擎基线（738f94f），main 为 audiocpp 版
@@ -51,6 +51,11 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   audiocpp sense_asr 族；**须以 cwd=audiocpp 仓库根运行**，silero_vad 相对路径）；解析
   stdout `text_output=` 行。
 - `hf.py` — HF 下载：本地优先 + hf-mirror 兜底（`HF_NO_MIRROR_FALLBACK=1` 关闭）。
+- `hymt2.py` — LLM 文案翻译（普通话→粤语，TTS 输入前处理）：Hy-MT2-1.8B
+  （腾讯开源，官方支持粤语 yue）+ 本机 `llama-completion`（llama.cpp）子进程推理，
+  模型走 HF 默认缓存（`HYMT2_REPO/HYMT2_FILE`，本地 `HYMT2_LOCAL` 优先）；
+  `translate(text, prompt=None, logger=None)` 按 `HYMT2_CHUNK_CHARS` 长文分块
+  逐段翻译；采样/设备参数在 config 顶部常量（腾讯官方推荐值）。
 - `pipeline.py` — 唯一编排入口：`synthesize()`（ASR 转写→按 `cfg.tts_model` 分发
   omnivoice/indextts2/fireredtts3/cosyvoice3/moss_tts_local/qwen3_tts/fish_audio
   →写盘）、`draw()`（抽卡 N 次）。
@@ -82,11 +87,14 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   主题，不引外部 CSS/theme）。
 - 六阶段流程（CLI 与 Web 同构）：环境准备→模型准备→输入文件检查→ASR→VOICECLONE→
   输出文件规范；vc.py 终端以 `[i/6]` 显示，长合成每 10s 心跳报进度。
-- web 双 Tab（生成/配置）：生成页左栏＝参考音频（上传即 SenseVoice 自动转写并回填）→
-  参考文本框→txt 文件（读入文本框）→待合成文本，右栏＝状态+按抽卡次数展示结果；配置页
-  提供模型（omnivoice/indextts2/fireredtts3）、设备、语言、抽卡次数与当前模型生成参数，
-  为进程内运行期设置（事件回调里经 gen_kwargs 覆盖 config 常量；空值回常量/引擎默认），
-  持久化修改仍以 src/config.py 顶部变量（或同名 env）为准。
+- web 三 Tab：1) 生成页：左栏＝参考音频（上传即 SenseVoice 自动转写并回填）→
+  参考文本框→txt 文件（读入文本框）→待合成文本，右栏＝状态+按抽卡次数展示结果；
+  2) 配置页：提供模型（omnivoice/indextts2/fireredtts3）、设备、语言、抽卡次数与
+  当前模型生成参数，为进程内运行期设置（事件回调里经 gen_kwargs 覆盖 config 常量；
+  空值回常量/引擎默认），持久化修改仍以 src/config.py 顶部变量（或同名 env）为准；
+  3) 粤语翻译页：左栏＝普通话文案输入+执行翻译按钮，右栏＝可编辑提示词模板
+  （默认 `HYMT2_PROMPT`，含 `{text}` 占位）+ 粤语译文输出；推理用 Hy-MT2
+  （llama-cli 子进程），模型首用自动经 HF 下载，长文案自动分块（HYMT2_CHUNK_CHARS）。
 - `_run_quiet`/`run_cli` 失败抛 `RuntimeError` 带 stderr 尾部诊断（≈60 行），不在入口裸奔。
 - **web 引擎/模型按需加载**：web.py 启动只启动 UI（无预热）；引擎/模型在点击"生成"时才由
   synthesize 内部定位/自动构建/下载，点击结束（finally）调 `pipeline.release()`（清

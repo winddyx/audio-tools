@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-audio-tools Web Demo — Gradio 双页（生成 / 配置）语音克隆
+audio-tools Web Demo — Gradio 三页（生成 / 配置 / 粤语翻译）语音克隆
 
 引擎与模型按需加载：启动只启动 Web 界面，不做任何预热；点击"生成"时
 synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日志可见），点击
@@ -14,6 +14,9 @@ synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日�
   moss_tts_local / qwen3_tts / fish_audio）、设备、语言、
   抽卡次数、当前模型的生成参数。配置为进程内运行期设置，仅对当前进程生效；
   持久化修改仍以 src/config.py 顶部变量（或同名环境变量）为准。
+- 粤语翻译页：左栏（普通话文案输入 + 执行翻译按钮）+ 右栏（可编辑的翻译
+  提示词模板 + 粤语译文输出）。推理用 Hy-MT2-1.8B（llama.cpp llama-cli
+  子进程，见 src/hymt2.py），模型首次使用自动经 HF 下载到默认缓存。
 
 用法:
     uv run python web.py
@@ -50,6 +53,7 @@ from src.config import (
     FIREREDTTS3_GUIDANCE_SCALE,
     FIREREDTTS3_INFERENCE_STEPS,
     FIREREDTTS3_STOP_THRESHOLD,
+    HYMT2_PROMPT,
     INDEXTTS_TEMPERATURE,
     INDEXTTS_TOP_K,
     INDEXTTS_TOP_P,
@@ -69,6 +73,7 @@ from src.config import (
     WEB_IP,
     WEB_PORT,
 )
+from src.hymt2 import translate as hymt2_translate
 from src.pipeline import release, synthesize
 
 logger = logging.getLogger("audio-tools-web")
@@ -407,6 +412,29 @@ def build_demo() -> gr.Blocks:
                     "本页设置只在当前进程内生效，重启后回到 config.py 默认值。"
                 )
 
+            # ── Tab3 粤语翻译（Hy-MT2-1.8B，llama.cpp 子进程）──────
+            with gr.Tab("粤语翻译 Translate"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        hy_src = gr.Textbox(
+                            label="1. 普通话文案 Source (普通话)",
+                            lines=9, interactive=True,
+                            placeholder="输入需要翻译成粤语的普通话/中文文案…",
+                        )
+                        hy_btn = gr.Button(
+                            "执行翻译 Translate", variant="primary")
+                    with gr.Column(scale=1):
+                        hy_prompt = gr.Textbox(
+                            label="2. 翻译提示词 Prompt（可编辑；"
+                                  "{text} 会被源文案替换）",
+                            lines=6, interactive=True, value=HYMT2_PROMPT,
+                        )
+                        hy_out = gr.Textbox(
+                            label="3. 粤语译文 Result (粤语)",
+                            lines=9, interactive=False,
+                            placeholder="翻译结果将显示在这里…",
+                        )
+
         # ── 事件 ─────────────────────────────────────────
 
         def _page_banner():
@@ -532,6 +560,26 @@ def build_demo() -> gr.Blocks:
                 _CTX_BUF.set(None)
                 release()
 
+        def _hy_translate_fn(src_v, prompt_v, buf):
+            """点击执行翻译：Hy-MT2（llama-cli 子进程）推理，日志写入终端框。"""
+            if not src_v or not src_v.strip():
+                buf.append(_term_line("WARN", "粤语翻译：未输入源文案，已取消。"))
+                return gr.update(value=""), _term_html(buf), buf
+            _CTX_BUF.set(buf)
+            try:
+                out = hymt2_translate(
+                    text=src_v, prompt=prompt_v or None, logger=logger)
+                buf.append(_term_line(
+                    "INFO", "粤语翻译完成（%d 字符）。" % len(out)))
+                return gr.update(value=out), _term_html(buf), buf
+            except Exception as e:
+                logger.exception("粤语翻译失败")
+                buf.append(_term_line(
+                    "ERROR", f"粤语翻译失败: {type(e).__name__}: {e}"))
+                return gr.update(value=""), _term_html(buf), buf
+            finally:
+                _CTX_BUF.set(None)
+
         ref_audio.change(
             _asr_on_upload,
             inputs=[ref_audio, device, log_state],
@@ -557,6 +605,11 @@ def build_demo() -> gr.Blocks:
                     q3_topk, q3_topp, q3_temp, q3_rp, fish_topk, fish_topp,
                     fish_temp, fish_maxtok, log_state],
             outputs=[*outputs, terminal, log_state],
+        )
+        hy_btn.click(
+            _hy_translate_fn,
+            inputs=[hy_src, hy_prompt, log_state],
+            outputs=[hy_out, terminal, log_state],
         )
         demo.load(_page_banner, outputs=[log_state, terminal])
     return demo
