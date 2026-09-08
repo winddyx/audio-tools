@@ -11,7 +11,7 @@ synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日�
 - 生成页：左栏（参考音频 → ASR 自动转写文本 → txt 文本文件 → 待合成文本）
   + 右栏（状态 + 按抽卡次数展示生成音频）。
 - 配置页：模型选择（omnivoice / indextts2 / fireredtts3 / cosyvoice3 /
-  moss_tts_local）、设备、语言、
+  moss_tts_local / qwen3_tts / fish_audio）、设备、语言、
   抽卡次数、当前模型的生成参数。配置为进程内运行期设置，仅对当前进程生效；
   持久化修改仍以 src/config.py 顶部变量（或同名环境变量）为准。
 
@@ -43,6 +43,10 @@ from src import (
 from src.config import (
     COSYVOICE3_INFERENCE_STEPS,
     COSYVOICE3_TOP_K,
+    FISH_AUDIO_MAX_NEW_TOKENS,
+    FISH_AUDIO_TEMPERATURE,
+    FISH_AUDIO_TOP_K,
+    FISH_AUDIO_TOP_P,
     FIREREDTTS3_GUIDANCE_SCALE,
     FIREREDTTS3_INFERENCE_STEPS,
     FIREREDTTS3_STOP_THRESHOLD,
@@ -55,6 +59,10 @@ from src.config import (
     MOSS_TOP_P,
     OMNI_GUIDANCE_SCALE,
     OMNI_INFERENCE_STEPS,
+    QWEN3TTS_REPETITION_PENALTY,
+    QWEN3TTS_TEMPERATURE,
+    QWEN3TTS_TOP_K,
+    QWEN3TTS_TOP_P,
     TMP_DIR,
     TTS_MODEL,
     WEB_AUTO_OPEN_BROWSER,
@@ -125,7 +133,7 @@ atexit.register(shutil.rmtree, _TMP_DIR, ignore_errors=True)
 
 # 可选项（与 src/config.py 顶部 TTS_MODEL / 设备检测保持一致）
 _MODEL_CHOICES = ["omnivoice", "indextts2", "fireredtts3", "cosyvoice3",
-                  "moss_tts_local"]
+                  "moss_tts_local", "qwen3_tts", "fish_audio"]
 _DEVICE_CHOICES = ["auto", "cuda", "mps", "cpu", "xpu"]   # auto = 引擎自动（cuda>mps>cpu）
 _LANG_CHOICES = ["Auto", "zh", "en", "yue", "ja", "ko"]
 
@@ -136,6 +144,8 @@ _MODEL_PARAMS: dict[str, list[str]] = {
     "fireredtts3": ["num_inference_steps", "guidance_scale", "stop_threshold"],
     "cosyvoice3": ["top_k", "num_inference_steps"],
     "moss_tts_local": ["top_k", "top_p", "temperature", "repetition_penalty"],
+    "qwen3_tts": ["top_k", "top_p", "temperature", "repetition_penalty"],
+    "fish_audio": ["top_k", "top_p", "temperature", "max_new_tokens"],
 }
 
 
@@ -170,7 +180,9 @@ def _cfg(model: str, device: str, **kw) -> Config:
 
 def _model_gen_kwargs(model_v, omni_s, omni_c, it2_k, it2_p, it2_t,
                       fr3_s, fr3_c, fr3_st, cosy_k, cosy_s,
-                      moss_k, moss_p, moss_t, moss_rp) -> dict | None:
+                      moss_k, moss_p, moss_t, moss_rp,
+                      q3_k, q3_p, q3_t, q3_rp,
+                      fish_k, fish_p, fish_t, fish_mt) -> dict | None:
     """按模型把配置页生成参数 UI 值转成 gen_kwargs（空值跳过 → 常量/引擎默认）。"""
     m = (model_v or "omnivoice").strip().lower()
     table = {
@@ -186,13 +198,20 @@ def _model_gen_kwargs(model_v, omni_s, omni_c, it2_k, it2_p, it2_t,
         "moss_tts_local": {"top_k": moss_k, "top_p": moss_p,
                            "temperature": moss_t,
                            "repetition_penalty": moss_rp},
+        "qwen3_tts": {"top_k": q3_k, "top_p": q3_p,
+                      "temperature": q3_t,
+                      "repetition_penalty": q3_rp},
+        "fish_audio": {"top_k": fish_k, "top_p": fish_p,
+                       "temperature": fish_t,
+                       "max_new_tokens": fish_mt},
     }
     kw = {}
     for key, v in table.get(m, {}).items():
         if v is not None and v != "":
             try:
                 kw[key] = int(v) if key in ("num_inference_steps",
-                                            "top_k") else float(v)
+                                            "top_k",
+                                            "max_new_tokens") else float(v)
             except (TypeError, ValueError):
                 continue
     return kw or None
@@ -249,7 +268,7 @@ def build_demo() -> gr.Blocks:
                     choices=_MODEL_CHOICES,
                     value=(TTS_MODEL or "omnivoice"),
                     info="omnivoice / indextts2 / fireredtts3 / cosyvoice3 / "
-                         "moss_tts_local；首次使用自动下载权重",
+                         "moss_tts_local / qwen3_tts / fish_audio；首次使用自动下载权重",
                 )
                 with gr.Group():
                     gr.Markdown("**基本设置（运行期生效，仅当前进程）**")
@@ -344,6 +363,45 @@ def build_demo() -> gr.Blocks:
                         value=float(MOSS_REPETITION_PENALTY or 0),
                         minimum=0, step=0.05, info="0 = 引擎默认",
                     )
+                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("qwen3")) as g_q3:
+                    gr.Markdown("**Qwen3-TTS 12Hz 1.7B Base 生成参数（零样本克隆）**")
+                    q3_topk = gr.Number(
+                        label="主 talker top-k", precision=0, value=QWEN3TTS_TOP_K,
+                        minimum=0, info="0 = 引擎默认",
+                    )
+                    q3_topp = gr.Number(
+                        label="主 talker top-p", value=float(QWEN3TTS_TOP_P or 0),
+                        minimum=0, maximum=1, step=0.05, info="0 = 引擎默认",
+                    )
+                    q3_temp = gr.Number(
+                        label="主 talker temperature",
+                        value=float(QWEN3TTS_TEMPERATURE or 0),
+                        minimum=0, step=0.05, info="0 = 引擎默认",
+                    )
+                    q3_rp = gr.Number(
+                        label="重复惩罚 repetition_penalty",
+                        value=float(QWEN3TTS_REPETITION_PENALTY or 0),
+                        minimum=0, step=0.05, info="0 = 引擎默认",
+                    )
+                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("fish")) as g_fish:
+                    gr.Markdown("**Fish Audio S2-Pro 生成参数（零样本克隆）**")
+                    fish_topk = gr.Number(
+                        label="top-k", precision=0, value=FISH_AUDIO_TOP_K,
+                        minimum=0, info="0 = 引擎默认",
+                    )
+                    fish_topp = gr.Number(
+                        label="top-p", value=float(FISH_AUDIO_TOP_P or 0),
+                        minimum=0, maximum=1, step=0.05, info="0 = 引擎默认",
+                    )
+                    fish_temp = gr.Number(
+                        label="temperature", value=float(FISH_AUDIO_TEMPERATURE or 0),
+                        minimum=0, step=0.05, info="0 = 引擎默认",
+                    )
+                    fish_maxtok = gr.Number(
+                        label="单 chunk 上限 max_new_tokens",
+                        precision=0, value=FISH_AUDIO_MAX_NEW_TOKENS, minimum=0,
+                        info="0 = 引擎默认",
+                    )
                 gr.Markdown(
                     "持久化修改请编辑 **src/config.py** 顶部变量或设置同名环境变量；"
                     "本页设置只在当前进程内生效，重启后回到 config.py 默认值。"
@@ -411,13 +469,17 @@ def build_demo() -> gr.Blocks:
                 gr.update(visible=m.startswith("firered")),
                 gr.update(visible=m.startswith("cosy")),
                 gr.update(visible=m.startswith("moss")),
+                gr.update(visible=m.startswith("qwen3")),
+                gr.update(visible=m.startswith("fish")),
                 f"当前模型 **{m}** 的生成参数（留空/0 = config.py 默认或引擎默认）",
             )
 
         def _clone_fn(text_v, ref_aud, ref_txt, model_v, device_v, lang_v,
                       draw_v, omni_s, omni_c, it2_k, it2_p, it2_t,
                       fr3_s, fr3_c, fr3_st, cosy_k, cosy_s,
-                      moss_k, moss_p, moss_t, moss_rp, buf):
+                      moss_k, moss_p, moss_t, moss_rp,
+                      q3_k, q3_p, q3_t, q3_rp,
+                      fish_k, fish_p, fish_t, fish_mt, buf):
             """点击生成：按配置页模型/参数逐次抽卡，日志写入终端框。"""
             draw_v = max(1, min(int(draw_v or 2), _MAX_DRAWS))
             if not text_v or not text_v.strip():
@@ -432,7 +494,8 @@ def build_demo() -> gr.Blocks:
                 cfg = _cfg(m, device_v)
                 gen_kwargs = _model_gen_kwargs(
                     m, omni_s, omni_c, it2_k, it2_p, it2_t, fr3_s, fr3_c,
-                    fr3_st, cosy_k, cosy_s, moss_k, moss_p, moss_t, moss_rp)
+                    fr3_st, cosy_k, cosy_s, moss_k, moss_p, moss_t, moss_rp,
+                    q3_k, q3_p, q3_t, q3_rp, fish_k, fish_p, fish_t, fish_mt)
                 lang = None if (lang_v or "Auto") == "Auto" else lang_v
                 # 输出命名：<参考音频名，去扩展名>.<unix秒>.wav（同秒冲突由
                 # pipeline 递增秒数）；gradio 上传路径保留原始文件名
@@ -482,7 +545,8 @@ def build_demo() -> gr.Blocks:
         model.change(
             _model_changed,
             inputs=[model],
-            outputs=[g_omni, g_it2, g_fr3, g_cosy, g_moss, param_note],
+            outputs=[g_omni, g_it2, g_fr3, g_cosy, g_moss, g_q3, g_fish,
+                     param_note],
         )
         btn.click(
             _clone_fn,
@@ -490,7 +554,8 @@ def build_demo() -> gr.Blocks:
                     draw_count, omni_steps, omni_cfg, it2_topk, it2_topp,
                     it2_temp, fr3_steps, fr3_cfg, fr3_stop, cosy_topk,
                     cosy_steps, moss_topk, moss_topp, moss_temp, moss_rp,
-                    log_state],
+                    q3_topk, q3_topp, q3_temp, q3_rp, fish_topk, fish_topp,
+                    fish_temp, fish_maxtok, log_state],
             outputs=[*outputs, terminal, log_state],
         )
         demo.load(_page_banner, outputs=[log_state, terminal])
