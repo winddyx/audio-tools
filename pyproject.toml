@@ -9,4 +9,5 @@ dependencies = [
     "huggingface_hub",
     # Web 界面（gradio）
     "gradio==6.24.0",
+    "zhconv>=1.4.3",
 ]

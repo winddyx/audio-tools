@@ -36,6 +36,7 @@ from .config import (
     HYMT2_TIMEOUT,
     HYMT2_TOP_K,
     HYMT2_TOP_P,
+    HYMT2_TRAD,
     LLAMA_CLI,
 )
 from .hf import _ensure_gguf_file
@@ -48,6 +49,21 @@ _YUE_MARKERS = "嘅咗喺哋啲係唔睇畀諗乜嘢仲同埋呢啲嗰啲呢度�
 def _looks_cantonese(text: str) -> bool:
     """粗判输出是否做了粤语转换（含任意粤语功能字即认为已转换）。"""
     return any(ch in _YUE_MARKERS for ch in text)
+
+
+def _to_hk_trad(text: str) -> str:
+    """译文统一转香港繁体（zhconv zh-hk + zh-hant 兜底）。
+
+    zhconv 的 zh-hk 表有个别简体漏转（如"户"），zh-hant 只处理剩余简体
+    字、不会改动已转好的繁体与粤语字，故链式转换补漏。未安装/失败原样返回。
+    """
+    if not text or not HYMT2_TRAD:
+        return text
+    try:
+        from zhconv import convert
+        return convert(convert(text, "zh-hk"), "zh-hant")
+    except Exception:
+        return text
 
 
 def _binary(logger: logging.Logger) -> str:
@@ -211,4 +227,7 @@ def translate(text: str, prompt: str | None = None,
             if _looks_cantonese(out2):
                 cleaned = out2
         parts.append(cleaned)
-    return "\n\n".join(p for p in parts if p)
+    result = "\n\n".join(p for p in parts if p)
+    # 简体字会让 audiocpp 粤语前端按普通话读音处理（如"消费者"读错），
+    # 统一转香港繁体后再返回
+    return _to_hk_trad(result)
