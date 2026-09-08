@@ -54,7 +54,6 @@ from src.config import (
     FIREREDTTS3_GUIDANCE_SCALE,
     FIREREDTTS3_INFERENCE_STEPS,
     FIREREDTTS3_STOP_THRESHOLD,
-    HYMT2_PROMPT,
     INDEXTTS_TEMPERATURE,
     INDEXTTS_TOP_K,
     INDEXTTS_TOP_P,
@@ -74,6 +73,7 @@ from src.config import (
     WEB_IP,
     WEB_PORT,
 )
+from src.hymt2 import default_prompt as hymt2_default_prompt
 from src.hymt2 import translate as hymt2_translate
 from src.pipeline import release, synthesize
 
@@ -428,7 +428,7 @@ def build_demo() -> gr.Blocks:
                         hy_prompt = gr.Textbox(
                             label="2. 翻译提示词 Prompt（可编辑；"
                                   "{text} 会被源文案替换）",
-                            lines=6, interactive=True, value=HYMT2_PROMPT,
+                            lines=6, interactive=True, value=hymt2_default_prompt(),
                         )
                         hy_out = gr.Textbox(
                             label="3. 粤语译文 Result (粤语)",

@@ -11,9 +11,10 @@ llama-completion（llama.cpp 单次补全 CLI）子进程做推理，Python 只�
   vendor/llama.cpp/build/bin/llama-completion（vendor 已 gitignore）；
 - 模型经 HuggingFace 下载，只留在 HF 默认缓存并生成 .gguf 硬链接别名
   （src/hf._ensure_gguf_file），不落工程目录；HYMT2_LOCAL 可手工放置；
-- 提示词模板（config.HYMT2_PROMPT）含 {text} 占位，运行时被源文案替换；
+- 提示词模板：默认读取 HYMT2_PROMPT_FILE 指向的纯文本（含 {text} 占位，
+  运行时被源文案替换；不含时直接拼末尾）；web 页提示词框可编辑；
 - 长文案按段落分块（HYMT2_CHUNK_CHARS）逐段翻译后拼接，避免长文漏翻；
-- llama-cli 失败抛 RuntimeError（带 stderr 尾部诊断），不在入口裸奔。
+- 推理失败抛 RuntimeError（带 stderr 尾部诊断），不在入口裸奔。
 
 web.py「粤语翻译」页调用 translate()。采样/设备等可调参数统一在
 src/config.py 顶部常量（同名 env 可覆盖），本文件不再散落默认值。
@@ -33,7 +34,7 @@ from .config import (
     HYMT2_FILE,
     HYMT2_LOCAL,
     HYMT2_MAX_TOKENS,
-    HYMT2_PROMPT,
+    HYMT2_PROMPT_FILE,
     HYMT2_REPETITION_PENALTY,
     HYMT2_REPO,
     HYMT2_TEMPERATURE,
@@ -255,19 +256,40 @@ def _build_prompt(template: str, text: str) -> str:
     return template.rstrip() + "\n\n" + text
 
 
+# 提示词模板文件缺失/为空时的兜底（正常情况下文件始终随仓库存在）
+_FALLBACK_PROMPT = (
+    "请将下面的普通话文案翻译成地道的香港粤语，逐句翻译，唔好照抄原文，"
+    "全文用香港繁体字输出，只输出译文，不加解释。\n\n{text}"
+)
+
+
+def default_prompt() -> str:
+    """读取默认提示词模板（HYMT2_PROMPT_FILE 指向的纯文本，可直接手改）。
+
+    文件缺失或内容为空时返回内置兜底模板，不中断使用。
+    """
+    try:
+        with open(HYMT2_PROMPT_FILE, encoding="utf-8") as f:
+            content = f.read().strip("\n")
+    except OSError:
+        return _FALLBACK_PROMPT
+    return content.strip() or _FALLBACK_PROMPT
+
+
 def translate(text: str, prompt: str | None = None,
               logger: logging.Logger | None = None) -> str:
     """普通话/中文文案 → 粤语文案。
 
-    text：源文案；prompt：提示词模板（默认 config.HYMT2_PROMPT，web 页
-    右侧可编辑框的值直接传入）。长文案自动分块逐段翻译，段间以空行连接。
+    text：源文案；prompt：提示词模板（默认读取 HYMT2_PROMPT_FILE 指向的
+    纯文本，web 页右侧可编辑框的值直接传入）。长文案自动分块逐段翻译，
+    段间以空行连接。
     """
     if logger is None:
         logger = logging.getLogger("omni")
     text = (text or "").strip()
     if not text:
         raise RuntimeError("待翻译文案为空。")
-    template = (prompt or "").strip() or HYMT2_PROMPT
+    template = (prompt or "").strip() or default_prompt()
 
     model = _ensure_model(logger)
     chunks = _chunk_text(text, HYMT2_CHUNK_CHARS)

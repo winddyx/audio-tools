@@ -95,7 +95,8 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   当前模型生成参数，为进程内运行期设置（事件回调里经 gen_kwargs 覆盖 config 常量；
   空值回常量/引擎默认），持久化修改仍以 src/config.py 顶部变量（或同名 env）为准；
   3) 粤语翻译页：左栏＝普通话文案输入+执行翻译按钮，右栏＝可编辑提示词模板
-  （默认 `HYMT2_PROMPT`，含 `{text}` 占位）+ 粤语译文输出；推理用 Hy-MT2
+  （默认提示词在根目录 `hymt2_prompt.txt` 纯文本，`config.HYMT2_PROMPT_FILE`
+  指向，含 `{text}` 占位，可直接手改）+ 粤语译文输出；推理用 Hy-MT2
   （`llama-completion` 子进程，`LLAMA_CLI` 留空自动构建 `vendor/llama.cpp`），
   模型首用自动经 HF 下载，长文案自动分块（HYMT2_CHUNK_CHARS）。
 - `_run_quiet`/`run_cli` 失败抛 `RuntimeError` 带 stderr 尾部诊断（≈60 行），不在入口裸奔。
