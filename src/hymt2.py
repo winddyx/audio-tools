@@ -40,6 +40,15 @@ from .config import (
 )
 from .hf import _ensure_gguf_file
 
+# 粤语功能字标志集：译文若完全不含这些字，基本可判定模型没执行粤语转换
+# （回显原文/繁体书面化），translate() 会自动重跑一次。
+_YUE_MARKERS = "嘅咗喺哋啲係唔睇畀諗乜嘢仲同埋呢啲嗰啲呢度嗰度"
+
+
+def _looks_cantonese(text: str) -> bool:
+    """粗判输出是否做了粤语转换（含任意粤语功能字即认为已转换）。"""
+    return any(ch in _YUE_MARKERS for ch in text)
+
 
 def _binary(logger: logging.Logger) -> str:
     """定位 llama-cli：LLAMA_CLI 绝对路径优先，否则 PATH 查找。"""
@@ -193,5 +202,13 @@ def translate(text: str, prompt: str | None = None,
             if cleaned.startswith(prefix):
                 cleaned = cleaned[len(prefix):].lstrip()
                 break
+        # 1.8B 偶发不执行粤语转换（回显原文或转繁体书面语），
+        # 输出不含粤语功能字时自动重跑一次再取用
+        if not cleaned or not _looks_cantonese(cleaned):
+            logger.warning(
+                "第 %d/%d 段输出未见粤语用字，自动重跑一次 …", i, total)
+            out2 = _run_once(model, _build_prompt(template, chunk), logger)
+            if _looks_cantonese(out2):
+                cleaned = out2
         parts.append(cleaned)
     return "\n\n".join(p for p in parts if p)
