@@ -186,10 +186,18 @@ WEB_AUTO_OPEN_BROWSER = _env_bool("AUDIOTOOLS_WEB_OPEN_BROWSER", False)
 HYMT2_REPO = _env("HYMT2_REPO", "tencent/Hy-MT2-1.8B-GGUF")
 HYMT2_FILE = _env("HYMT2_FILE", "Hy-MT2-1.8B-Q8_0.gguf")  # 仓库另备 Q4_K_M / Q6_K
 HYMT2_LOCAL = _env("HYMT2_LOCAL", "")     # 手工放置的 .gguf 绝对路径（优先）
-# llama.cpp 单次补全可执行名或绝对路径。新版 llama.cpp（ggml >= 0.10）把
-# 单次补全拆到 llama-completion（llama-cli 只做对话，不支持 --no-conversation）；
-# 旧版可用 llama-cli / llama-simple。brew install llama.cpp 自带。
-LLAMA_CLI = _env("LLAMA_CLI", "llama-completion")
+# llama.cpp 单次补全可执行（llama-completion）。留空 = 自动：优先复用
+# vendor/llama.cpp 已有构建产物，缺失则自动 clone + cmake 编译（与 audiocpp
+# 引擎同模式，不依赖本机 brew 安装）；非空 = 用指定可执行名或绝对路径
+# （可指向 llama-cli / llama-simple 等其他版本）。
+LLAMA_CLI = _env("LLAMA_CLI", "")
+LLAMA_REPO = _env("LLAMA_REPO", "https://github.com/ggml-org/llama.cpp.git")
+# clone/构建所用分支（llama.cpp 主线为 master；默认值随上游演进可改）
+LLAMA_REF = _env("LLAMA_REF", "master")
+# 追加 cmake 参数（如 "-DGGML_METAL=OFF -DGGML_CPU_ALL_VARIANTS=OFF"）
+LLAMA_BUILD_ARGS = _env("LLAMA_BUILD_ARGS", "")
+# True = 透传 clone/编译原始输出（调试用）
+LLAMA_DEBUG = _env_bool("LLAMA_DEBUG", False)
 # 采样参数默认 = 腾讯官方推荐（temp 0.7 / top-p 0.6 / top-k 20 / rep 1.05）
 HYMT2_TEMPERATURE = _env("HYMT2_TEMPERATURE", "0.7")
 HYMT2_TOP_P = _env("HYMT2_TOP_P", "0.6")

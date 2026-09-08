@@ -52,7 +52,9 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   stdout `text_output=` 行。
 - `hf.py` — HF 下载：本地优先 + hf-mirror 兜底（`HF_NO_MIRROR_FALLBACK=1` 关闭）。
 - `hymt2.py` — LLM 文案翻译（普通话→粤语，TTS 输入前处理）：Hy-MT2-1.8B
-  （腾讯开源，官方支持粤语 yue）+ 本机 `llama-completion`（llama.cpp）子进程推理，
+  （腾讯开源，官方支持粤语 yue）+ `llama-completion`（llama.cpp 子进程；
+  `LLAMA_CLI` 留空时自动 clone + cmake 编译 `vendor/llama.cpp`，不依赖本机
+  brew 安装，产物 `vendor/llama.cpp/build/bin/llama-completion`），
   模型走 HF 默认缓存（`HYMT2_REPO/HYMT2_FILE`，本地 `HYMT2_LOCAL` 优先）；
   `translate(text, prompt=None, logger=None)` 按 `HYMT2_CHUNK_CHARS` 长文分块
   逐段翻译；采样/设备参数在 config 顶部常量（腾讯官方推荐值）。
@@ -94,7 +96,8 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   空值回常量/引擎默认），持久化修改仍以 src/config.py 顶部变量（或同名 env）为准；
   3) 粤语翻译页：左栏＝普通话文案输入+执行翻译按钮，右栏＝可编辑提示词模板
   （默认 `HYMT2_PROMPT`，含 `{text}` 占位）+ 粤语译文输出；推理用 Hy-MT2
-  （llama-cli 子进程），模型首用自动经 HF 下载，长文案自动分块（HYMT2_CHUNK_CHARS）。
+  （`llama-completion` 子进程，`LLAMA_CLI` 留空自动构建 `vendor/llama.cpp`），
+  模型首用自动经 HF 下载，长文案自动分块（HYMT2_CHUNK_CHARS）。
 - `_run_quiet`/`run_cli` 失败抛 `RuntimeError` 带 stderr 尾部诊断（≈60 行），不在入口裸奔。
 - **web 引擎/模型按需加载**：web.py 启动只启动 UI（无预热）；引擎/模型在点击"生成"时才由
   synthesize 内部定位/自动构建/下载，点击结束（finally）调 `pipeline.release()`（清

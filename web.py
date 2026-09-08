@@ -15,8 +15,9 @@ synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日�
   抽卡次数、当前模型的生成参数。配置为进程内运行期设置，仅对当前进程生效；
   持久化修改仍以 src/config.py 顶部变量（或同名环境变量）为准。
 - 粤语翻译页：左栏（普通话文案输入 + 执行翻译按钮）+ 右栏（可编辑的翻译
-  提示词模板 + 粤语译文输出）。推理用 Hy-MT2-1.8B（llama.cpp llama-cli
-  子进程，见 src/hymt2.py），模型首次使用自动经 HF 下载到默认缓存。
+  提示词模板 + 粤语译文输出）。推理用 Hy-MT2-1.8B（llama.cpp 的
+  llama-completion 子进程，见 src/hymt2.py；LLAMA_CLI 留空时首次使用自动
+  clone + 编译 vendor/llama.cpp），模型首次使用自动经 HF 下载到默认缓存。
 
 用法:
     uv run python web.py

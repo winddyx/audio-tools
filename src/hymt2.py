@@ -5,6 +5,10 @@ audio-tools — 粤语文案翻译（Hy-MT2-1.8B，llama.cpp 子进程）
 腾讯开源的多语言翻译模型（官方支持粤语 yue 双向互译），本模块用本机
 llama-completion（llama.cpp 单次补全 CLI）子进程做推理，Python 只做编排：
 
+- 引擎：新版 llama.cpp（ggml >= 0.10）把单次补全拆到 llama-completion。
+  LLAMA_CLI 留空时自动 clone + cmake 编译 vendor/llama.cpp（与 audiocpp
+  同模式，不依赖本机 brew 安装），产物
+  vendor/llama.cpp/build/bin/llama-completion（vendor 已 gitignore）；
 - 模型经 HuggingFace 下载，只留在 HF 默认缓存并生成 .gguf 硬链接别名
   （src/hf._ensure_gguf_file），不落工程目录；HYMT2_LOCAL 可手工放置；
 - 提示词模板（config.HYMT2_PROMPT）含 {text} 占位，运行时被源文案替换；
@@ -37,7 +41,12 @@ from .config import (
     HYMT2_TOP_K,
     HYMT2_TOP_P,
     HYMT2_TRAD,
+    LLAMA_BUILD_ARGS,
     LLAMA_CLI,
+    LLAMA_DEBUG,
+    LLAMA_REF,
+    LLAMA_REPO,
+    VENDOR_DIR,
 )
 from .hf import _ensure_gguf_file
 
@@ -66,18 +75,75 @@ def _to_hk_trad(text: str) -> str:
         return text
 
 
+_LLAMA_BIN_NAME = "llama-completion"
+
+
 def _binary(logger: logging.Logger) -> str:
-    """定位 llama-cli：LLAMA_CLI 绝对路径优先，否则 PATH 查找。"""
-    if os.path.sep in LLAMA_CLI and os.path.isfile(LLAMA_CLI):
-        return LLAMA_CLI
-    found = shutil.which(LLAMA_CLI)
-    if found:
-        return found
-    raise RuntimeError(
-        "未找到翻译可执行文件（当前设置 LLAMA_CLI = %s），请先安装 "
-        "llama.cpp（brew install llama.cpp），或在 src/config.py 设置 "
-        "LLAMA_CLI 指向可执行文件。" % LLAMA_CLI
-    )
+    """定位 llama-completion：LLAMA_CLI 显式设置优先，否则自动构建 vendor。
+
+    - LLAMA_CLI 非空：当作可执行名（PATH 查找）或绝对路径，找不到即报错；
+    - LLAMA_CLI 留空（默认）：复用 vendor/llama.cpp/build/bin 下已有产物，
+      缺失则自动 clone + cmake 编译（同 audiocpp 引擎模式，不依赖本机安装）。
+    """
+    if LLAMA_CLI:
+        if os.path.sep in LLAMA_CLI and os.path.isfile(LLAMA_CLI):
+            return LLAMA_CLI
+        found = shutil.which(LLAMA_CLI)
+        if found:
+            return found
+        raise RuntimeError(f"LLAMA_CLI 指向的可执行未找到: {LLAMA_CLI}")
+    built = os.path.join(VENDOR_DIR, "llama.cpp", "build", "bin", _LLAMA_BIN_NAME)
+    if os.path.isfile(built):
+        return built
+    return _ensure_built(logger)
+
+
+def _run_step(cmd: list[str], logger: logging.Logger, desc: str) -> None:
+    """执行 clone/编译等一次性步骤；失败抛 RuntimeError（带输出尾部）。"""
+    t0 = time.time()
+    try:
+        if LLAMA_DEBUG:
+            r = subprocess.run(cmd)          # 透传原始输出（调试用）
+        else:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            f"{desc}失败：缺少命令 {e.filename}（请检查 git/cmake 是否安装）")
+    if r.returncode != 0:
+        tail = "" if LLAMA_DEBUG else (r.stderr or r.stdout or "").strip()[-800:]
+        raise RuntimeError(f"{desc}失败（rc={r.returncode}）: {tail}")
+    logger.info("%s完成（%.0fs）", desc, time.time() - t0)
+
+
+def _ensure_built(logger: logging.Logger) -> str:
+    """自动 clone + 编译 llama.cpp，返回 llama-completion 绝对路径。"""
+    src = os.path.join(VENDOR_DIR, "llama.cpp")
+    build = os.path.join(src, "build")
+    binary = os.path.join(build, "bin", _LLAMA_BIN_NAME)
+    if shutil.which("cmake") is None:
+        raise RuntimeError("未找到 cmake，请先安装（brew install cmake）后重试。")
+    if not os.path.isfile(os.path.join(src, "CMakeLists.txt")):
+        logger.info("未找到 llama.cpp 源码，clone %s（分支 %s）…",
+                    LLAMA_REPO, LLAMA_REF)
+        os.makedirs(VENDOR_DIR, exist_ok=True)
+        _run_step([
+            "git", "clone", "--depth", "1", "--branch", LLAMA_REF,
+            "--single-branch", "--recurse-submodules",
+            LLAMA_REPO, src,
+        ], logger, "git clone llama.cpp")
+    logger.info("cmake 配置 vendor/llama.cpp（首次较久）…")
+    cfg = ["cmake", "-S", src, "-B", build, "-DCMAKE_BUILD_TYPE=Release"]
+    cfg += (LLAMA_BUILD_ARGS or "").split()
+    _run_step(cfg, logger, "cmake 配置")
+    logger.info("cmake 编译 %s（多核，请耐心等待）…", _LLAMA_BIN_NAME)
+    _run_step([
+        "cmake", "--build", build, "--config", "Release",
+        "--target", _LLAMA_BIN_NAME, "--parallel",
+    ], logger, "cmake 编译")
+    if not os.path.isfile(binary):
+        raise RuntimeError(f"编译完成但未找到产物: {binary}")
+    logger.info("%s 就绪: %s", _LLAMA_BIN_NAME, binary)
+    return binary
 
 
 def _ensure_model(logger: logging.Logger) -> str:
