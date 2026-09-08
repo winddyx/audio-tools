@@ -256,6 +256,8 @@ def _prepare_models(cfg: Config, logger: logging.Logger, *, need_asr: bool) -> N
         from src.fireredtts3 import _ensure_model as _m
     elif tts_name.startswith("cosy"):
         from src.cosyvoice3 import _ensure_model as _m
+    elif tts_name.startswith("moss"):
+        from src.moss_tts_local import _ensure_model as _m
     else:
         logger.warning("  未知 TTS_MODEL %s，跳过模型准备", tts_name)
         return

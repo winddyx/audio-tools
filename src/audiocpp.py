@@ -99,8 +99,11 @@ def _clone_and_build(logger: logging.Logger) -> None:
                    "git clone audio.cpp", logger, env=env)
 
     # 只构建本项目的模型族，避免全套 60+ 族（耗时/体积）
-    # fireredtts3（FireRedTTS-3 Base）/ cosyvoice3（CosyVoice-3）为零样本语音克隆
-    models = "omnivoice,index_tts2,sense_asr,fireredtts3,cosyvoice3"
+    # fireredtts3（FireRedTTS-3 Base）/ cosyvoice3（CosyVoice-3）/
+    # moss（MOSS-TTS-Local v1.5 所在目标，覆盖 moss_tts_local 与
+    # moss_tts_nano 两族，见 audiocpp CMakeLists audiocpp_add_model(moss))
+    # 为零样本语音克隆；moss 已在引擎 main/dev 分支实现。
+    models = "omnivoice,index_tts2,sense_asr,fireredtts3,cosyvoice3,moss"
     args = [
         "-S", src_dir, "-B", os.path.join(src_dir, "build", "audiocpp"),
         "-DCMAKE_BUILD_TYPE=Release",

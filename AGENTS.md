@@ -2,7 +2,7 @@
 
 语音克隆工具：参考音频 + 文本 → 克隆音色朗读。推理由 [audio.cpp](https://github.com/0xShug0/audio.cpp)
 （ggml C++ 引擎，`audiocpp_cli`）子进程完成，Python 只做编排。多 TTS 模型可切换
-（`TTS_MODEL`：omnivoice / indextts2 / fireredtts3 / cosyvoice3），ASR 用
+（`TTS_MODEL`：omnivoice / indextts2 / fireredtts3 / cosyvoice3 / moss_tts_local），ASR 用
 SenseVoice-Small 自动转写参考音频。
 只做语音克隆，不做声音设计/自动音色。
 
@@ -34,12 +34,14 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   （纯平台探测 cuda>xpu>mps>cpu，darwin arm64→mps）+ `_quiet_hf_logs()`。所有常量 `_env(...)`
   可覆盖；**无 torch**。
 - `audiocpp.py` — 模型无关引擎运行器：`_ensure_binary()`（AUDIOCPP_BIN→glob vendor/build/*
-  →自动 `_clone_and_build()` custom 五族 omnivoice,index_tts2,sense_asr,fireredtts3,
-  cosyvoice3；clone 分支取 config.AUDIOCPP_REF，默认 dev——cosyvoice3 目前只在
-  引擎 dev 分支实现）、device→`--backend`
+  →自动 `_clone_and_build()` custom 六族 omnivoice,index_tts2,sense_asr,fireredtts3,
+  cosyvoice3,moss（moss 为 build 目标名，覆盖 moss_tts_local/moss_tts_nano 两族，
+  已在引擎 main/dev 分支实现）；clone 分支取 config.AUDIOCPP_REF，默认 dev——
+  cosyvoice3 目前只在引擎 dev 分支实现）、device→`--backend`
   映射（cuda/metal/cpu，""→best，xpu→cpu）、`run_cli()`（GPU 初始化失败自动 CPU 重试、
   `AUDIOCPP_DEBUG` 透传 stdout/stderr）、`_run_quiet()`（须传 env）。
-- `omnivoice.py` / `indextts2.py` / `fireredtts3.py` / `cosyvoice3.py` — TTS 模型核心，
+- `omnivoice.py` / `indextts2.py` / `fireredtts3.py` / `cosyvoice3.py` /
+  `moss_tts_local.py` — TTS 模型核心，
   各含 `_ensure_model(logger)`（本地
   手工放置优先，缺失经 HF 下载 `audio-cpp/audio.cpp-gguf` 且文件留在 HF 默认缓存）与
   `generate(cfg, logger, **kwargs)` →
@@ -49,7 +51,7 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   stdout `text_output=` 行。
 - `hf.py` — HF 下载：本地优先 + hf-mirror 兜底（`HF_NO_MIRROR_FALLBACK=1` 关闭）。
 - `pipeline.py` — 唯一编排入口：`synthesize()`（ASR 转写→按 `cfg.tts_model` 分发
-  omnivoice/indextts2/fireredtts3/cosyvoice3→写盘）、`draw()`（抽卡 N 次）。
+  omnivoice/indextts2/fireredtts3/cosyvoice3/moss_tts_local→写盘）、`draw()`（抽卡 N 次）。
   vc/web 不直接调模型/ASR。
 
 ## Conventions

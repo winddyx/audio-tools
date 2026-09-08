@@ -14,7 +14,8 @@ audio.cpp C++ 子进程完成，Python 侧不再 import torch。
 目录规划（业务入口在根，核心在 src/）：
 - 根目录：vc.py（CLI 入口）、web.py（Gradio 入口）
 - src/：config.py（本文件，全局设置）、audiocpp.py（推理引擎运行器）、
-  omnivoice.py / indextts2.py（TTS 模型核心）、sensevoice.py（ASR 核心）、
+  各 TTS 模型核心（omnivoice.py / indextts2.py / fireredtts3.py /
+  cosyvoice3.py / moss_tts_local.py）、sensevoice.py（ASR 核心）、
   hf.py（HuggingFace 下载）、pipeline.py（统一编排）
 """
 
@@ -63,7 +64,7 @@ class Config:
 
     # ── 模型（GGUF_LOCAL 手工放置优先；缺失自动经 HF 下载，文件留在 HF 默认缓存，
     #    不落工程目录；引擎需要真实 .gguf 路径，见 hf._ensure_gguf_file）──
-    tts_model: str = ""       # "omnivoice" | "indextts2" | "fireredtts3" | "cosyvoice3"；留空用 TTS_MODEL
+    tts_model: str = ""       # "omnivoice" | "indextts2" | "fireredtts3" | "cosyvoice3" | "moss_tts_local"；留空用 TTS_MODEL
     device: str = ""          # 留空则自动检测（cuda > xpu > mps > cpu）
 
     # ── 生成模式（本期只做语音克隆）──
@@ -104,9 +105,10 @@ AUDIOCPP_DEBUG = _env_bool("AUDIOCPP_DEBUG", False)
 
 # ── TTS 模型（audiocpp 族）────────────────────────────────
 # TTS_MODEL 切换模型（弱化单一模型绑定）：omnivoice / indextts2 / fireredtts3 /
-# cosyvoice3。
+# cosyvoice3 / moss_tts_local（moss_tts_local 简写亦可，如 moss / mosstts）。
 # 各模型的 GGUF 文件与 HF 兜底仓库定义在对应模型核心
-# （src/omnivoice.py、src/indextts2.py、src/fireredtts3.py、src/cosyvoice3.py），
+# （src/omnivoice.py、src/indextts2.py、src/fireredtts3.py、src/cosyvoice3.py、
+# src/moss_tts_local.py），
 # 本文件只放默认选择与本地目录。
 TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 
@@ -118,6 +120,9 @@ TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 #   随机种子（不传种子时引擎固定 1234，可复现）
 # - CosyVoice-3（零样本克隆）：AR top-k 25 / flow 10 步 + 随机种子（不传时
 #   引擎固定 1986，可复现）
+# - MOSS-TTS-Local v1.5（零样本克隆，模型自动多语言）：音频 token 采样
+#   temperature 1.7 / top-p 0.8 / top-k 25 / repetition penalty 1.0（文本
+#   门控与分块走引擎默认；该族未暴露 seed，采样随机不可复现）
 # 设 0 / 空 / -1 可回到"不传 flag = 引擎默认"。
 OMNI_INFERENCE_STEPS = _env_int("OMNI_INFERENCE_STEPS", 32)  # 0 = 引擎默认
 OMNI_GUIDANCE_SCALE = _env("OMNI_GUIDANCE_SCALE", "2.0")     # 空 = 引擎默认
@@ -129,6 +134,10 @@ FIREREDTTS3_GUIDANCE_SCALE = _env("FIREREDTTS3_GUIDANCE_SCALE", "2.0")    # 空 
 FIREREDTTS3_STOP_THRESHOLD = _env("FIREREDTTS3_STOP_THRESHOLD", "0.5")    # 空 = 引擎默认
 COSYVOICE3_TOP_K = _env_int("COSYVOICE3_TOP_K", 25)          # 0 = 引擎默认
 COSYVOICE3_INFERENCE_STEPS = _env_int("COSYVOICE3_INFERENCE_STEPS", 10)   # 0 = 引擎默认
+MOSS_TEMPERATURE = _env("MOSS_TEMPERATURE", "1.7")            # 空 = 引擎默认
+MOSS_TOP_P = _env("MOSS_TOP_P", "0.8")                        # 空 = 引擎默认
+MOSS_TOP_K = _env_int("MOSS_TOP_K", 25)                       # 0 = 引擎默认
+MOSS_REPETITION_PENALTY = _env("MOSS_REPETITION_PENALTY", "1.0")  # 空 = 引擎默认
 GEN_SEED = _env_int("GEN_SEED", -1)                          # -1 = 随机（不传 seed）
 
 # ── 长文本分块（引擎 --text-chunk-size / --text-chunk-mode）─────────

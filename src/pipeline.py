@@ -3,7 +3,7 @@
 
 synthesize(): ASR 转写（clone 且缺 ref_text 时）→ TTS 模型 generate
               （按 config.TTS_MODEL 分发 omnivoice / indextts2 / fireredtts3 /
-              cosyvoice3）→ 输出命名
+              cosyvoice3 / moss_tts_local）→ 输出命名
               → 写 WAV → SynthesisResult（含 out_path / ASR 文本）。
 draw():       连续合成 N 次（抽卡），返回结果列表。
 
@@ -70,9 +70,12 @@ def _tts_generate(cfg: Config, logger: logging.Logger, **kwargs) -> AudioResult:
     if name in ("cosyvoice3", "cosy", "cosyvoice"):
         from .cosyvoice3 import generate as _cv3
         return _cv3(cfg, logger, **kwargs)
+    if name in ("moss_tts_local", "moss", "mosstts", "moss_tts"):
+        from .moss_tts_local import generate as _moss
+        return _moss(cfg, logger, **kwargs)
     raise ValueError(
         f"未知 TTS_MODEL: {name}（支持 omnivoice / indextts2 / fireredtts3 / "
-        "cosyvoice3，见 src/config.py 顶部 TTS_MODEL）")
+        "cosyvoice3 / moss_tts_local，见 src/config.py 顶部 TTS_MODEL）")
 
 
 def synthesize(

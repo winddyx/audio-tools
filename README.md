@@ -48,6 +48,7 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
     ├── indextts2.py       # IndexTTS-2.5 模型核心（TTS 语音克隆）
     ├── fireredtts3.py     # FireRedTTS-3 Base 模型核心（零样本语音克隆）
     ├── cosyvoice3.py      # CosyVoice-3 模型核心（零样本语音克隆）
+    ├── moss_tts_local.py  # MOSS-TTS-Local v1.5 模型核心（零样本语音克隆）
     ├── sensevoice.py      # SenseVoice-Small ASR 核心（参考音频转写）
     ├── hf.py              # HuggingFace 下载（本地优先 + hf-mirror 兜底 + .gguf 别名）
     └── pipeline.py        # 统一编排 synthesize()/draw()/release()
@@ -73,9 +74,10 @@ uv run python web.py
 - **生成页**：左栏自上而下＝参考音频（上传后立即用 SenseVoice 自动转写并
   回填）→ 参考文本（可修改）→ txt 文件（按钮式上传，读入文本框）→ 待合成
   文本；右栏＝状态 + 按抽卡次数展示的生成音频槽。
-- **配置页**：置顶模型选择（omnivoice / indextts2 / fireredtts3，生成参数组
-  随模型联动显示），下方基本设置＝推理设备 / 语言 / 抽卡次数 / 当前模型生成
-  参数。页面设置为进程内运行期覆盖（空值回 config.py 默认或引擎默认）；
+- **配置页**：置顶模型选择（omnivoice / indextts2 / fireredtts3 /
+  cosyvoice3 / moss_tts_local，生成参数组随模型联动显示），下方基本设置＝
+  推理设备 / 语言 / 抽卡次数 / 当前模型生成参数。页面设置为进程内运行期覆盖
+  （空值回 config.py 默认或引擎默认）；
   持久化修改请编辑 `src/config.py` 顶部变量或设置同名环境变量。
 - 引擎/模型按需加载：启动即用；首次 ASR 或生成自动构建/下载，任务结束立即
   释放，长时间运行无需重启。
@@ -84,7 +86,7 @@ uv run python web.py
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `TTS_MODEL` | `omnivoice` | TTS 模型：`omnivoice` / `indextts2` / `fireredtts3` / `cosyvoice3` |
+| `TTS_MODEL` | `omnivoice` | TTS 模型：`omnivoice` / `indextts2` / `fireredtts3` / `cosyvoice3` / `moss_tts_local` |
 | `LANGUAGE` | 空 | 合成语言（如 `zh` / `en` / `yue`）；空 = 自动 |
 | `DRAW_COUNT` | `2` | 抽卡次数 |
 | `OUTPUT_DIR` | 文本所在目录 | CLI 输出目录 |
@@ -97,6 +99,7 @@ uv run python web.py
 | `FIREREDTTS3_STOP_THRESHOLD` | `0.5` | FireRedTTS-3 AR 停止阈值（空 = 引擎默认） |
 | `COSYVOICE3_TOP_K` | `25` | CosyVoice-3 AR top-k（0 = 引擎默认） |
 | `COSYVOICE3_INFERENCE_STEPS` | `10` | CosyVoice-3 flow 步数（0 = 引擎默认） |
+| `MOSS_TEMPERATURE` / `MOSS_TOP_P` / `MOSS_TOP_K` / `MOSS_REPETITION_PENALTY` | `1.7` / `0.8` / `25` / `1.0` | MOSS-TTS-Local 音频 token 采样参数（空/0 = 引擎默认；该族未暴露 seed） |
 | `GEN_SEED` | `-1` | 固定随机种子（`-1` = 随机；设同值可复现结果） |
 | `TEXT_CHUNK_SIZE` | `160` | 长文本分块每块上限（`0` = 不分块；修复长文吞字/乱码，实测 OmniVoice 相似度 0.877→0.982） |
 | `TEXT_CHUNK_MODE` | 空 | 分块模式：空 = 自动（输入分段且每段 ≤ 上限用 `endline` 按换行，否则 `default` 按标点断句）；可设 `endline` / `tag_aware` / `japanese` / `default` |
@@ -118,14 +121,18 @@ uv run python web.py
     `FireRedTTS3-Base-GGUF/fireredtts3-base-q8_0.gguf`（零样本语音克隆）
   - CosyVoice-3（q8_0）：`audio-cpp/audio.cpp-gguf` →
     `CosyVoice3-GGUF/cosyvoice3-q8_0.gguf`（零样本语音克隆）
+  - MOSS-TTS-Local v1.5（q8_0）：`audio-cpp/audio.cpp-gguf` →
+    `MOSS-TTS-Local-v1.5-GGUF/moss-tts-local-v1.5-q8_0.gguf`
+    （零样本语音克隆，48 kHz）
 - ASR：`FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` →
   `sensevoice-small-q8-audiocpp-v1.gguf`
 - 引擎：audio.cpp 首次运行自动 clone + cmake 构建到 `vendor/audiocpp/`
   （custom 模型集：omnivoice / index_tts2 / sense_asr / fireredtts3 /
-  cosyvoice3；clone 分支由 `AUDIOCPP_REF` 决定，默认 `dev`——cosyvoice3 族
-  目前只在 dev 分支实现，main 合并后可改回；引擎/源码/权重均 gitignore，
-  删除后首跑会重新构建下载；macOS 全新机器需 brew libomp，audiocpp.py 已
-  注入 include/flag）
+  cosyvoice3 / moss；moss 目标覆盖 moss_tts_local 与 moss_tts_nano 两族，
+  已在引擎 main/dev 分支实现；clone 分支由 `AUDIOCPP_REF` 决定，默认
+  `dev`——cosyvoice3 族目前只在 dev 分支实现，main 合并后可改回；引擎/源码/
+  权重均 gitignore，删除后首跑会重新构建下载；macOS 全新机器需 brew libomp，
+  audiocpp.py 已注入 include/flag）
 
 ## CLI 阶段化流程（`[i/6]`）
 
