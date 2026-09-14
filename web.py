@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-audio-tools Web Demo — Gradio 三页（生成 / 配置 / 粤语翻译）语音克隆
+audio-tools Web Demo — Gradio 三页（语音克隆 / 粤语翻译 / SRT 字幕生成）
 
 引擎与模型按需加载：启动只启动 Web 界面，不做任何预热；点击"生成"时
 synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日志可见），点击
@@ -8,16 +8,18 @@ synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日�
 任何引擎/模型。
 
 页面：
-- 生成页：左栏（参考音频 → ASR 自动转写文本 → txt 文本文件 → 待合成文本）
-  + 右栏（状态 + 按抽卡次数展示生成音频）。
-- 配置页：模型选择（omnivoice / indextts2 / fireredtts3 / cosyvoice3 /
-  moss_tts_local / qwen3_tts / fish_audio）、设备、语言、
-  抽卡次数、当前模型的生成参数。配置为进程内运行期设置，仅对当前进程生效；
-  持久化修改仍以 src/config.py 顶部变量（或同名环境变量）为准。
+- 语音克隆 VoiceClone：左栏（参考音频 → ASR 自动转写文本 → txt 文本文件 →
+  待合成文本）+ 右栏（状态 + 按抽卡次数展示生成音频）；页面底部为合并后的
+  「模型与运行设置」（模型选择 + 设备 / 语言 / 抽卡次数）。
 - 粤语翻译页：左栏（普通话文案输入 + 执行翻译按钮）+ 右栏（可编辑的翻译
   提示词模板 + 粤语译文输出）。推理用 Hy-MT2-1.8B（llama.cpp 的
   llama-completion 子进程，见 src/hymt2.py；LLAMA_CLI 留空时首次使用自动
   clone + 编译 vendor/llama.cpp），模型首次使用自动经 HF 下载到默认缓存。
+
+生成参数（步数 / 采样等）不在界面暴露：统一由 src/config.py 顶部常量
+（或同名环境变量）控制，默认即最高质量档。底部「模型与运行设置」只覆盖
+模型 / 设备 / 语言 / 抽卡次数，为进程内运行期设置，重启后回到 config.py
+默认值。
 
 用法:
     uv run python web.py
@@ -45,28 +47,18 @@ from src import (
     _transcribe_ref,
 )
 from src.config import (
-    COSYVOICE3_INFERENCE_STEPS,
-    COSYVOICE3_TOP_K,
-    FISH_AUDIO_MAX_NEW_TOKENS,
-    FISH_AUDIO_TEMPERATURE,
-    FISH_AUDIO_TOP_K,
-    FISH_AUDIO_TOP_P,
-    FIREREDTTS3_GUIDANCE_SCALE,
-    FIREREDTTS3_INFERENCE_STEPS,
-    FIREREDTTS3_STOP_THRESHOLD,
-    INDEXTTS_TEMPERATURE,
-    INDEXTTS_TOP_K,
-    INDEXTTS_TOP_P,
-    MOSS_REPETITION_PENALTY,
-    MOSS_TEMPERATURE,
-    MOSS_TOP_K,
-    MOSS_TOP_P,
-    OMNI_GUIDANCE_SCALE,
-    OMNI_INFERENCE_STEPS,
-    QWEN3TTS_REPETITION_PENALTY,
-    QWEN3TTS_TEMPERATURE,
-    QWEN3TTS_TOP_K,
-    QWEN3TTS_TOP_P,
+    SRT_ASR,
+    SRT_ENUM_COMMA_AS_SPACE,
+    SRT_ITN,
+    SRT_MAX_BLOCK_SECONDS,
+    SRT_MAX_GAP_SECONDS,
+    SRT_MAX_LINES,
+    SRT_MAX_LINE_WIDTH,
+    SRT_MIN_BLOCK_SECONDS,
+    SRT_MIN_CUE_WIDTH,
+    SRT_PUNCTUATION,
+    SRT_VAD_MERGE_GAP,
+    SRT_VAD_MIN_SPEECH,
     TMP_DIR,
     TTS_MODEL,
     WEB_AUTO_OPEN_BROWSER,
@@ -76,10 +68,14 @@ from src.config import (
 from src.hymt2 import default_prompt as hymt2_default_prompt
 from src.hymt2 import translate as hymt2_translate
 from src.pipeline import release, synthesize
+from src.subtitle import subtitles
+
+# SRT 页 ASR 模型可选值（与 src/config.py 顶部 SRT_ASR 一致）
+_SRT_MODEL_CHOICES = ["sensevoice", "qwen3_asr"]
 
 logger = logging.getLogger("audio-tools-web")
 
-# ── 生成页"终端日志"（替代原状态框）──────────────────────
+# ── 语音克隆页"终端日志"（替代原状态框）────────────────
 # 只展示从浏览器打开页面（该 gradio 会话）起产生的日志：事件处理器在进入时
 # 把本会话的日志缓冲列表写入 _CTX_BUF，_SessionLogHandler 捕获期间发出的
 # logging 记录（引擎/ASR/编排同款控制台信息）；无滚动条、高度固定、最新置底
@@ -143,17 +139,6 @@ _MODEL_CHOICES = ["omnivoice", "indextts2", "fireredtts3", "cosyvoice3",
 _DEVICE_CHOICES = ["auto", "cuda", "mps", "cpu", "xpu"]   # auto = 引擎自动（cuda>mps>cpu）
 _LANG_CHOICES = ["Auto", "zh", "en", "yue", "ja", "ko"]
 
-# 各模型生成参数键（config.py 顶部常量是文件默认；UI 覆盖为空时走常量/引擎默认）
-_MODEL_PARAMS: dict[str, list[str]] = {
-    "omnivoice": ["num_inference_steps", "guidance_scale"],
-    "indextts2": ["top_k", "top_p", "temperature"],
-    "fireredtts3": ["num_inference_steps", "guidance_scale", "stop_threshold"],
-    "cosyvoice3": ["top_k", "num_inference_steps"],
-    "moss_tts_local": ["top_k", "top_p", "temperature", "repetition_penalty"],
-    "qwen3_tts": ["top_k", "top_p", "temperature", "repetition_penalty"],
-    "fish_audio": ["top_k", "top_p", "temperature", "max_new_tokens"],
-}
-
 
 def _cleanup_leftover_tmp() -> None:
     """每次启动清理项目 .tmp 目录（上次异常退出残留的生成文件）。"""
@@ -184,45 +169,6 @@ def _cfg(model: str, device: str, **kw) -> Config:
                   device="" if device == "auto" else device, **kw)
 
 
-def _model_gen_kwargs(model_v, omni_s, omni_c, it2_k, it2_p, it2_t,
-                      fr3_s, fr3_c, fr3_st, cosy_k, cosy_s,
-                      moss_k, moss_p, moss_t, moss_rp,
-                      q3_k, q3_p, q3_t, q3_rp,
-                      fish_k, fish_p, fish_t, fish_mt) -> dict | None:
-    """按模型把配置页生成参数 UI 值转成 gen_kwargs（空值跳过 → 常量/引擎默认）。"""
-    m = (model_v or "omnivoice").strip().lower()
-    table = {
-        "omnivoice": {"num_inference_steps": omni_s,
-                      "guidance_scale": omni_c},
-        "indextts2": {"top_k": it2_k, "top_p": it2_p,
-                      "temperature": it2_t},
-        "fireredtts3": {"num_inference_steps": fr3_s,
-                        "guidance_scale": fr3_c,
-                        "stop_threshold": fr3_st},
-        "cosyvoice3": {"top_k": cosy_k,
-                       "num_inference_steps": cosy_s},
-        "moss_tts_local": {"top_k": moss_k, "top_p": moss_p,
-                           "temperature": moss_t,
-                           "repetition_penalty": moss_rp},
-        "qwen3_tts": {"top_k": q3_k, "top_p": q3_p,
-                      "temperature": q3_t,
-                      "repetition_penalty": q3_rp},
-        "fish_audio": {"top_k": fish_k, "top_p": fish_p,
-                       "temperature": fish_t,
-                       "max_new_tokens": fish_mt},
-    }
-    kw = {}
-    for key, v in table.get(m, {}).items():
-        if v is not None and v != "":
-            try:
-                kw[key] = int(v) if key in ("num_inference_steps",
-                                            "top_k",
-                                            "max_new_tokens") else float(v)
-            except (TypeError, ValueError):
-                continue
-    return kw or None
-
-
 def build_demo() -> gr.Blocks:
     os.makedirs(_TMP_DIR, exist_ok=True)
 
@@ -230,13 +176,21 @@ def build_demo() -> gr.Blocks:
                    analytics_enabled=False) as demo:
         gr.Markdown(
             "# audio-tools made by David \n"
-            "参考音频 + 文本 → 语音克隆。模型在下方「配置」页选择，"
-            "当前默认: " + (TTS_MODEL or "omnivoice") + "。"
+            "参考音频 + 文本 → 语音克隆；音频 → SRT 字幕。各页设置在其底部"
+            "「模型与运行设置」中，当前默认模型: " + (TTS_MODEL or "omnivoice") + "。"
         )
 
+        # ── 终端日志（页面级共享）──────────────────────────────
+        # 位于标题下方、Tab 栏上方：三个 Tab 的事件处理器共用同一个会话缓冲，
+        # 只记录从打开本页起产生的日志；按 gradio 会话隔离（gr.State），
+        # 刷新页面即清空重来。
+        gr.Markdown("**终端日志 Terminal（自本页打开起；最新在底部）**")
+        log_state = gr.State([])
+        terminal = gr.HTML(_term_html([]))
+
         with gr.Tabs():
-            # ── Tab1 生成页 ────────────────────────────────
-            with gr.Tab("生成 Generation"):
+            # ── Tab1 语音克隆 ──────────────────────────────
+            with gr.Tab("语音克隆 VoiceClone"):
                 with gr.Row():
                     with gr.Column(scale=1):
                         ref_audio = gr.Audio(
@@ -259,161 +213,47 @@ def build_demo() -> gr.Blocks:
                         )
                         btn = gr.Button("生成 Generate", variant="primary")
                     with gr.Column(scale=1):
-                        gr.Markdown("**终端日志 Terminal（自本页打开起；最新在底部）**")
-                        log_state = gr.State([])
-                        terminal = gr.HTML(_term_html([]))
                         outputs = [
                             gr.Audio(label=f"结果 {i + 1} Result {i + 1}",
                                      type="filepath", visible=False)
                             for i in range(_MAX_DRAWS)
                         ]
-            # ── Tab2 配置页 ────────────────────────────────
-            with gr.Tab("配置 Settings"):
-                model = gr.Radio(
-                    label="模型选择 TTS Model",
-                    choices=_MODEL_CHOICES,
-                    value=(TTS_MODEL or "omnivoice"),
-                    info="omnivoice / indextts2 / fireredtts3 / cosyvoice3 / "
-                         "moss_tts_local / qwen3_tts / fish_audio；首次使用自动下载权重",
-                )
-                with gr.Group():
-                    gr.Markdown("**基本设置（运行期生效，仅当前进程）**")
-                    device = gr.Dropdown(
-                        label="推理设备 Device",
-                        choices=_DEVICE_CHOICES, value="auto",
-                        info="auto = 引擎自动选择（cuda > mps > cpu）",
+                # ── 模型与运行设置（合并原「配置」页；生成参数不在此暴露，
+                #    统一由 src/config.py 顶部常量控制）──────────────
+                with gr.Accordion(
+                        "模型与运行设置 Model & Runtime Settings",
+                        open=False):
+                    model = gr.Radio(
+                        label="模型选择 TTS Model",
+                        choices=_MODEL_CHOICES,
+                        value=(TTS_MODEL or "omnivoice"),
+                        info="omnivoice / indextts2 / fireredtts3 / cosyvoice3 / "
+                             "moss_tts_local / qwen3_tts / fish_audio；首次使用自动下载权重",
                     )
-                    language = gr.Dropdown(
-                        label="语言 Language (默认)",
-                        choices=_LANG_CHOICES, value="Auto",
-                        info="选 Auto 以自动检测语种。",
-                    )
-                    draw_count = gr.Slider(
-                        label="抽卡次数 Draw Count",
-                        minimum=1, maximum=_MAX_DRAWS, step=1, value=2,
-                        info="一次生成几个结果供挑选。",
+                    with gr.Row():
+                        device = gr.Dropdown(
+                            label="推理设备 Device",
+                            choices=_DEVICE_CHOICES, value="auto", scale=1,
+                            info="auto = 引擎自动（cuda > mps > cpu）",
+                        )
+                        language = gr.Dropdown(
+                            label="语言 Language（默认）",
+                            choices=_LANG_CHOICES, value="Auto", scale=1,
+                            info="Auto = 自动检测语种。",
+                        )
+                        draw_count = gr.Slider(
+                            label="抽卡次数 Draw Count",
+                            minimum=1, maximum=_MAX_DRAWS, step=1, value=2,
+                            scale=1,
+                            info="一次生成几个结果（1-%d）。" % _MAX_DRAWS,
+                        )
+                    gr.Markdown(
+                        "本区设置只在当前进程内生效（重启回到默认）；持久化修改"
+                        "请编辑 **src/config.py** 顶部变量或设置同名环境变量——"
+                        "生成参数（步数 / 采样等）同样在 config.py 顶部调整。"
                     )
 
-                param_note = gr.Markdown("")
-                with gr.Group(visible=(TTS_MODEL or "omnivoice") == "omnivoice") as g_omni:
-                    gr.Markdown("**OmniVoice 生成参数**")
-                    omni_steps = gr.Number(
-                        label="去噪步数 num_inference_steps",
-                        precision=0, value=OMNI_INFERENCE_STEPS, minimum=0,
-                        info="0 = 引擎默认",
-                    )
-                    omni_cfg = gr.Number(
-                        label="CFG 引导 guidance_scale",
-                        value=float(OMNI_GUIDANCE_SCALE or 0), minimum=0, step=0.1,
-                        info="0 = 引擎默认",
-                    )
-                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("indextts")) as g_it2:
-                    gr.Markdown("**IndexTTS-2.5 生成参数（gpt 层采样）**")
-                    it2_topk = gr.Number(
-                        label="top-k", precision=0, value=INDEXTTS_TOP_K, minimum=0,
-                        info="0 = 引擎默认",
-                    )
-                    it2_topp = gr.Number(
-                        label="top-p", value=float(INDEXTTS_TOP_P or 0),
-                        minimum=0, maximum=1, step=0.05, info="0 = 引擎默认",
-                    )
-                    it2_temp = gr.Number(
-                        label="temperature", value=float(INDEXTTS_TEMPERATURE or 0),
-                        minimum=0, step=0.05, info="0 = 引擎默认",
-                    )
-                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("firered")) as g_fr3:
-                    gr.Markdown("**FireRedTTS-3 生成参数（Base 零样本克隆）**")
-                    fr3_steps = gr.Number(
-                        label="flow 步数 num_inference_steps",
-                        precision=0, value=FIREREDTTS3_INFERENCE_STEPS, minimum=0,
-                        info="0 = 引擎默认",
-                    )
-                    fr3_cfg = gr.Number(
-                        label="CFG 引导 guidance_scale",
-                        value=float(FIREREDTTS3_GUIDANCE_SCALE or 0),
-                        minimum=0, step=0.1, info="0 = 引擎默认",
-                    )
-                    fr3_stop = gr.Number(
-                        label="停止阈值 stop_threshold",
-                        value=float(FIREREDTTS3_STOP_THRESHOLD or 0),
-                        minimum=0, maximum=1, step=0.05, info="0 = 引擎默认",
-                    )
-                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("cosy")) as g_cosy:
-                    gr.Markdown("**CosyVoice-3 生成参数（零样本克隆）**")
-                    cosy_topk = gr.Number(
-                        label="AR top-k", precision=0, value=COSYVOICE3_TOP_K,
-                        minimum=0, info="0 = 引擎默认",
-                    )
-                    cosy_steps = gr.Number(
-                        label="flow 步数 num_inference_steps",
-                        precision=0, value=COSYVOICE3_INFERENCE_STEPS, minimum=0,
-                        info="0 = 引擎默认",
-                    )
-                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("moss")) as g_moss:
-                    gr.Markdown("**MOSS-TTS-Local v1.5 生成参数（零样本克隆）**")
-                    moss_topk = gr.Number(
-                        label="音频采样 top-k", precision=0, value=MOSS_TOP_K,
-                        minimum=0, info="0 = 引擎默认",
-                    )
-                    moss_topp = gr.Number(
-                        label="音频采样 top-p", value=float(MOSS_TOP_P or 0),
-                        minimum=0, maximum=1, step=0.05, info="0 = 引擎默认",
-                    )
-                    moss_temp = gr.Number(
-                        label="音频采样 temperature",
-                        value=float(MOSS_TEMPERATURE or 0),
-                        minimum=0, step=0.05, info="0 = 引擎默认",
-                    )
-                    moss_rp = gr.Number(
-                        label="重复惩罚 repetition_penalty",
-                        value=float(MOSS_REPETITION_PENALTY or 0),
-                        minimum=0, step=0.05, info="0 = 引擎默认",
-                    )
-                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("qwen3")) as g_q3:
-                    gr.Markdown("**Qwen3-TTS 12Hz 1.7B Base 生成参数（零样本克隆）**")
-                    q3_topk = gr.Number(
-                        label="主 talker top-k", precision=0, value=QWEN3TTS_TOP_K,
-                        minimum=0, info="0 = 引擎默认",
-                    )
-                    q3_topp = gr.Number(
-                        label="主 talker top-p", value=float(QWEN3TTS_TOP_P or 0),
-                        minimum=0, maximum=1, step=0.05, info="0 = 引擎默认",
-                    )
-                    q3_temp = gr.Number(
-                        label="主 talker temperature",
-                        value=float(QWEN3TTS_TEMPERATURE or 0),
-                        minimum=0, step=0.05, info="0 = 引擎默认",
-                    )
-                    q3_rp = gr.Number(
-                        label="重复惩罚 repetition_penalty",
-                        value=float(QWEN3TTS_REPETITION_PENALTY or 0),
-                        minimum=0, step=0.05, info="0 = 引擎默认",
-                    )
-                with gr.Group(visible=(TTS_MODEL or "omnivoice").startswith("fish")) as g_fish:
-                    gr.Markdown("**Fish Audio S2-Pro 生成参数（零样本克隆）**")
-                    fish_topk = gr.Number(
-                        label="top-k", precision=0, value=FISH_AUDIO_TOP_K,
-                        minimum=0, info="0 = 引擎默认",
-                    )
-                    fish_topp = gr.Number(
-                        label="top-p", value=float(FISH_AUDIO_TOP_P or 0),
-                        minimum=0, maximum=1, step=0.05, info="0 = 引擎默认",
-                    )
-                    fish_temp = gr.Number(
-                        label="temperature", value=float(FISH_AUDIO_TEMPERATURE or 0),
-                        minimum=0, step=0.05, info="0 = 引擎默认",
-                    )
-                    fish_maxtok = gr.Number(
-                        label="单 chunk 上限 max_new_tokens",
-                        precision=0, value=FISH_AUDIO_MAX_NEW_TOKENS, minimum=0,
-                        info="0 = 引擎默认",
-                    )
-                gr.Markdown(
-                    "持久化修改请编辑 **src/config.py** 顶部变量或设置同名环境变量；"
-                    "本页设置只在当前进程内生效，重启后回到 config.py 默认值。"
-                )
-
-            # ── Tab3 粤语翻译（Hy-MT2-1.8B，llama.cpp 子进程）──────
+            # ── Tab2 粤语翻译（Hy-MT2-1.8B，llama.cpp 子进程）──────
             with gr.Tab("粤语翻译 Translate"):
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -435,6 +275,121 @@ def build_demo() -> gr.Blocks:
                             lines=9, interactive=False,
                             placeholder="翻译结果将显示在这里…",
                         )
+
+            # ── Tab3 SRT 字幕生成（音频 → 字幕；见 src/subtitle.py）──
+            with gr.Tab("SRT 字幕生成 SRT Subtitles"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        srt_audio = gr.Audio(
+                            label="1. 音频文件 Audio (wav)",
+                            type="filepath",
+                        )
+                        srt_btn = gr.Button(
+                            "生成字幕 Generate SRT", variant="primary")
+                    with gr.Column(scale=1):
+                        srt_file = gr.File(
+                            label="2. SRT 字幕文件（点击下载）",
+                            interactive=False,
+                        )
+                        srt_preview = gr.Textbox(
+                            label="3. SRT 预览 Preview",
+                            lines=14, interactive=False,
+                            placeholder="生成后在此预览字幕内容…",
+                        )
+                # ── 模型与 ASR 设置（SRT 页专用）──────────────────
+                with gr.Accordion("模型与 ASR 设置 Model & ASR Settings",
+                                  open=False):
+                    srt_model = gr.Radio(
+                        label="ASR 模型 Model",
+                        choices=_SRT_MODEL_CHOICES,
+                        value=(SRT_ASR or "qwen3_asr"),
+                        info="qwen3_asr（默认）= Qwen3-ASR + Qwen3-ForcedAligner，"
+                             "词级时间轴并按标点断句（首次约 2.3 GB 下载）；"
+                             "sensevoice = silero VAD 分段 + SenseVoice，段级时间轴"
+                             "（复用已缓存权重，无下载，精度较低）。",
+                    )
+                    with gr.Row():
+                        srt_device = gr.Dropdown(
+                            label="推理设备 Device",
+                            choices=_DEVICE_CHOICES, value="auto", scale=1,
+                            info="auto = 引擎自动（cuda > mps > cpu）",
+                        )
+                        srt_language = gr.Dropdown(
+                            label="语种 Language",
+                            choices=_LANG_CHOICES, value="Auto", scale=1,
+                            info="Auto = 模型自动判断。",
+                        )
+                    with gr.Row():
+                        srt_gap = gr.Slider(
+                            label="分段合并间隙 Merge Gap (s)",
+                            minimum=0.0, maximum=2.0, step=0.1, scale=1,
+                            value=float(SRT_VAD_MERGE_GAP),
+                            info="VAD 段：间隔小于该值的相邻语音段并成一句。",
+                        )
+                        srt_min_speech = gr.Slider(
+                            label="最短语音段 Min Speech (s)",
+                            minimum=0.0, maximum=2.0, step=0.1, scale=1,
+                            value=float(SRT_VAD_MIN_SPEECH),
+                            info="VAD 段：短于该时长的段丢弃。",
+                        )
+                    with gr.Row():
+                        srt_itn = gr.Checkbox(
+                            label="文本规范化 ITN", value=SRT_ITN, scale=1,
+                            info="数字/标点规范化（仅 sensevoice）。",
+                        )
+                        srt_punctuation = gr.Checkbox(
+                            label="输出标点 Punctuation", value=SRT_PUNCTUATION,
+                            scale=1,
+                            info="关掉则字幕只留正文（断句仍按标点判断）。",
+                        )
+                        srt_enum_space = gr.Checkbox(
+                            label="顿号转空格 、→空格",
+                            value=SRT_ENUM_COMMA_AS_SPACE, scale=1,
+                            info="列举用空格分隔：赣州、贵阳 → 赣州 贵阳。",
+                        )
+                    with gr.Row():
+                        srt_width = gr.Slider(
+                            label="每行宽度 Max Line Width",
+                            minimum=16, maximum=64, step=2, scale=1,
+                            value=SRT_MAX_LINE_WIDTH,
+                            info="CJK 按 2 计（32 ≈ 16 汉字）。",
+                        )
+                        srt_lines = gr.Slider(
+                            label="每屏行数 Max Lines",
+                            minimum=1, maximum=3, step=1, scale=1,
+                            value=SRT_MAX_LINES,
+                        )
+                        srt_min_cue = gr.Slider(
+                            label="单条最小宽度 Min Cue Width",
+                            minimum=0, maximum=24, step=2, scale=1,
+                            value=SRT_MIN_CUE_WIDTH,
+                            info="低于此宽度的碎条并入相邻条（0 = 关闭）。",
+                        )
+                    with gr.Row():
+                        srt_block = gr.Slider(
+                            label="单条最长秒数 Max Block (s)",
+                            minimum=1.0, maximum=12.0, step=0.5, scale=1,
+                            value=float(SRT_MAX_BLOCK_SECONDS),
+                            info="超时后优先顺延到最近的标点处断条。",
+                        )
+                        srt_max_gap = gr.Slider(
+                            label="句间断句间隙 Max Gap (s)",
+                            minimum=0.2, maximum=3.0, step=0.1, scale=1,
+                            value=float(SRT_MAX_GAP_SECONDS),
+                            info="词间停顿超过该值即断条。",
+                        )
+                        srt_min_block = gr.Slider(
+                            label="单条最短秒数 Min Block (s)",
+                            minimum=0.0, maximum=3.0, step=0.1, scale=1,
+                            value=float(SRT_MIN_BLOCK_SECONDS),
+                            info="不足则向后延长显示。",
+                        )
+                    gr.Markdown(
+                        "断条优先标点（句末成句即断、句内标点作为回退点），"
+                        "避免把词组从中间切开；本区设置只在当前进程内生效，"
+                        "持久化修改请编辑 **src/config.py** 顶部变量或设置同名"
+                        "环境变量。"
+                    )
 
         # ── 事件 ─────────────────────────────────────────
 
@@ -489,27 +444,13 @@ def build_demo() -> gr.Blocks:
                 % (os.path.basename(file_path), len(content))))
             return gr.update(value=content), _term_html(buf), buf
 
-        def _model_changed(model_v):
-            """模型切换：只显示当前模型的生成参数组。"""
-            m = (model_v or "omnivoice").strip().lower()
-            return (
-                gr.update(visible=m == "omnivoice"),
-                gr.update(visible=m.startswith("indextts")),
-                gr.update(visible=m.startswith("firered")),
-                gr.update(visible=m.startswith("cosy")),
-                gr.update(visible=m.startswith("moss")),
-                gr.update(visible=m.startswith("qwen3")),
-                gr.update(visible=m.startswith("fish")),
-                f"当前模型 **{m}** 的生成参数（留空/0 = config.py 默认或引擎默认）",
-            )
-
         def _clone_fn(text_v, ref_aud, ref_txt, model_v, device_v, lang_v,
-                      draw_v, omni_s, omni_c, it2_k, it2_p, it2_t,
-                      fr3_s, fr3_c, fr3_st, cosy_k, cosy_s,
-                      moss_k, moss_p, moss_t, moss_rp,
-                      q3_k, q3_p, q3_t, q3_rp,
-                      fish_k, fish_p, fish_t, fish_mt, buf):
-            """点击生成：按配置页模型/参数逐次抽卡，日志写入终端框。"""
+                      draw_v, buf):
+            """点击生成：按底部「模型与运行设置」逐次抽卡，日志写入终端框。
+
+            生成参数不来自界面：config.py 顶部常量（默认最高质量档）由各
+            模型核心在拼 CLI 时消费，此处不传 gen_kwargs。
+            """
             draw_v = max(1, min(int(draw_v or 2), _MAX_DRAWS))
             if not text_v or not text_v.strip():
                 buf.append(_term_line("WARN", "未输入待合成文本，已取消。"))
@@ -521,10 +462,6 @@ def build_demo() -> gr.Blocks:
             try:
                 m = (model_v or "omnivoice").strip().lower()
                 cfg = _cfg(m, device_v)
-                gen_kwargs = _model_gen_kwargs(
-                    m, omni_s, omni_c, it2_k, it2_p, it2_t, fr3_s, fr3_c,
-                    fr3_st, cosy_k, cosy_s, moss_k, moss_p, moss_t, moss_rp,
-                    q3_k, q3_p, q3_t, q3_rp, fish_k, fish_p, fish_t, fish_mt)
                 lang = None if (lang_v or "Auto") == "Auto" else lang_v
                 # 输出命名：<参考音频名，去扩展名>.<unix秒>.wav（同秒冲突由
                 # pipeline 递增秒数）；gradio 上传路径保留原始文件名
@@ -540,7 +477,6 @@ def build_demo() -> gr.Blocks:
                         ref_text=(ref_txt or None),
                         out_dir=_TMP_DIR,
                         out_name=audio_base,
-                        gen_kwargs=gen_kwargs,
                     )
                     results.append(result.out_path)
                 buf.append(_term_line(
@@ -591,21 +527,72 @@ def build_demo() -> gr.Blocks:
             inputs=[txt_file, log_state],
             outputs=[text, terminal, log_state],
         )
-        model.change(
-            _model_changed,
-            inputs=[model],
-            outputs=[g_omni, g_it2, g_fr3, g_cosy, g_moss, g_q3, g_fish,
-                     param_note],
-        )
         btn.click(
             _clone_fn,
             inputs=[text, ref_audio, asr_text, model, device, language,
-                    draw_count, omni_steps, omni_cfg, it2_topk, it2_topp,
-                    it2_temp, fr3_steps, fr3_cfg, fr3_stop, cosy_topk,
-                    cosy_steps, moss_topk, moss_topp, moss_temp, moss_rp,
-                    q3_topk, q3_topp, q3_temp, q3_rp, fish_topk, fish_topp,
-                    fish_temp, fish_maxtok, log_state],
+                    draw_count, log_state],
             outputs=[*outputs, terminal, log_state],
+        )
+        def _srt_fn(audio, model_v, device_v, lang_v, itn_v, punct_v,
+                    enum_space_v, gap_v, min_speech_v, width_v, lines_v,
+                    min_cue_v, block_v, max_gap_v, min_block_v, buf):
+            """点击生成字幕：src.subtitle.subtitles（Qwen3-ASR+ForcedAligner 词级
+            或 VAD+SenseVoice 段级）→ SRT 文件 + 预览，日志入终端框。"""
+            if not audio:
+                buf.append(_term_line("WARN", "未上传音频文件，已取消。"))
+                return gr.update(), gr.update(), _term_html(buf), buf
+            _CTX_BUF.set(buf)
+            try:
+                m = (model_v or "qwen3_asr").strip().lower()
+                cfg = _cfg("", device_v, srt_asr=m, srt_audio=audio,
+                           language="" if (lang_v or "Auto") == "Auto"
+                           else lang_v)
+                audio_base = (os.path.splitext(os.path.basename(audio))[0]
+                              or "audio")
+                buf.append(_term_line("INFO", "生成字幕（ASR 模型 %s）…" % m))
+                result = subtitles(
+                    cfg, logger,
+                    audio=audio,
+                    out_dir=_TMP_DIR,
+                    out_name=audio_base,
+                    asr_backend=m,
+                    itn=bool(itn_v),
+                    punctuation=bool(punct_v),
+                    enum_comma_space=bool(enum_space_v),
+                    vad_merge_gap=float(gap_v or 0),
+                    vad_min_speech=float(min_speech_v or 0),
+                    max_line_width=int(width_v) if width_v else None,
+                    max_lines=int(lines_v) if lines_v else None,
+                    min_cue_width=int(min_cue_v) if min_cue_v else 0,
+                    max_block_seconds=float(block_v) if block_v else None,
+                    max_gap_seconds=float(max_gap_v) if max_gap_v else None,
+                    min_block_seconds=(float(min_block_v)
+                                       if min_block_v else 0.0),
+                )
+                buf.append(_term_line(
+                    "INFO", "字幕完成：%d 条（%s）→ %s"
+                    % (len(result.cues), result.asr_backend,
+                       os.path.basename(result.srt_path))))
+                return (gr.update(value=result.srt_path),
+                        gr.update(value=result.srt_text),
+                        _term_html(buf), buf)
+            except Exception as e:
+                logger.exception("字幕生成失败")
+                buf.append(_term_line(
+                    "ERROR", f"字幕生成失败: {type(e).__name__}: {e}"))
+                return gr.update(), gr.update(), _term_html(buf), buf
+            finally:
+                # 生成完（无论成败）立即卸载引擎/模型进程内状态
+                _CTX_BUF.set(None)
+                release()
+
+        srt_btn.click(
+            _srt_fn,
+            inputs=[srt_audio, srt_model, srt_device, srt_language, srt_itn,
+                    srt_punctuation, srt_enum_space, srt_gap, srt_min_speech,
+                    srt_width, srt_lines, srt_min_cue, srt_block, srt_max_gap,
+                    srt_min_block, log_state],
+            outputs=[srt_file, srt_preview, terminal, log_state],
         )
         hy_btn.click(
             _hy_translate_fn,

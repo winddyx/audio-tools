@@ -9,7 +9,7 @@ SenseVoice-Small 自动转写参考音频。
 ## Project
 
 - Python >=3.10，仅 uv 管理（`uv sync` / `uv run`，禁 pip/venv/poetry）
-- 入口：`vc.py`（CLI）、`web.py`（Gradio 三 Tab：生成 / 配置 / 粤语翻译），共用 `src/` 包
+- 入口：`vc.py`（CLI）、`web.py`（Gradio 三 Tab：语音克隆 / 粤语翻译 / SRT 字幕生成），共用 `src/` 包
 - 推理全在 C++ 侧；Python 无 torch/torchaudio 依赖
 - 仓库是个人 fork，push 走 `origin main`；绝不向上游（audio.cpp 等）提交 PR/issue
 - 本地分支 `v1` = 旧 omnivoice.cpp 引擎基线（738f94f），main 为 audiocpp 版
@@ -34,10 +34,10 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   （纯平台探测 cuda>xpu>mps>cpu，darwin arm64→mps）+ `_quiet_hf_logs()`。所有常量 `_env(...)`
   可覆盖；**无 torch**。
 - `audiocpp.py` — 模型无关引擎运行器：`_ensure_binary()`（AUDIOCPP_BIN→glob vendor/build/*
-  →自动 `_clone_and_build()` custom 八族 omnivoice,index_tts2,sense_asr,fireredtts3,
-  cosyvoice3,moss,qwen3_tts,fish_audio（moss 为 build 目标名，覆盖
-  moss_tts_local/moss_tts_nano 两族；moss/qwen3_tts/fish_audio 已在引擎
-  main/dev 分支实现）；clone 分支取 config.AUDIOCPP_REF，默认 dev——
+  →自动 `_clone_and_build()` custom 十族 omnivoice,index_tts2,sense_asr,fireredtts3,
+  cosyvoice3,moss,qwen3_tts,fish_audio,qwen3_asr,qwen3_forced_aligner（moss 为 build
+  目标名，覆盖 moss_tts_local/moss_tts_nano 两族；qwen3_asr + qwen3_forced_aligner
+  供 SRT 字幕词级时间轴）；clone 分支取 config.AUDIOCPP_REF，默认 dev——
   cosyvoice3 目前只在引擎 dev 分支实现）、device→`--backend`
   映射（cuda/metal/cpu，""→best，xpu→cpu）、`run_cli()`（GPU 初始化失败自动 CPU 重试、
   `AUDIOCPP_DEBUG` 透传 stdout/stderr）、`_run_quiet()`（须传 env）。
@@ -50,6 +50,17 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
 - `sensevoice.py` — ASR 核心：`_transcribe_ref(cfg, logger)`（16 kHz mono 自动重采样；
   audiocpp sense_asr 族；**须以 cwd=audiocpp 仓库根运行**，silero_vad 相对路径）；解析
   stdout `text_output=` 行。
+- `subtitle.py` — SRT 字幕核心：`subtitles(cfg, logger, **kwargs)`（音频 → SRT）。
+  两条 ASR 路径（默认 `SRT_ASR=qwen3_asr`）：`qwen3_asr`（Qwen3-ASR +
+  Qwen3-ForcedAligner，`--words-out` 词级时间轴 + `--text-out` 带标点转写，
+  须给 `--session-option qwen3_asr.forced_aligner_model_path=`；词条本身无标点，
+  标点由 `_punct_flags` 与词条序列按归一化字符流对齐后回填并作为断句依据）
+  与 `sensevoice`（silero VAD `--task vad` 分段 → 逐段切 wav →
+  `--batch-audio-dir` 一次批量转写 → 段级时间轴）；VAD 用引擎自带
+  `assets/framework/models/silero_vad`（绝对路径，随 vendor 一同 clone）。
+  SRT 由本模块排版：断条/断行优先标点（句末成句即断、句内标点作回退点），
+  超最长秒数且句内无标点时按 `SRT_BLOCK_EXTEND_SECONDS` 顺延到最近标点；
+  行宽按 CJK=2 计、中文不插空格。推理全在引擎侧。
 - `hf.py` — HF 下载：本地优先 + hf-mirror 兜底（`HF_NO_MIRROR_FALLBACK=1` 关闭）。
 - `hymt2.py` — LLM 文案翻译（普通话→粤语，TTS 输入前处理）：Hy-MT2-1.8B
   （腾讯开源，官方支持粤语 yue）+ `llama-completion`（llama.cpp 子进程；
@@ -89,16 +100,30 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   主题，不引外部 CSS/theme）。
 - 六阶段流程（CLI 与 Web 同构）：环境准备→模型准备→输入文件检查→ASR→VOICECLONE→
   输出文件规范；vc.py 终端以 `[i/6]` 显示，长合成每 10s 心跳报进度。
-- web 三 Tab：1) 生成页：左栏＝参考音频（上传即 SenseVoice 自动转写并回填）→
-  参考文本框→txt 文件（读入文本框）→待合成文本，右栏＝状态+按抽卡次数展示结果；
-  2) 配置页：提供模型（omnivoice/indextts2/fireredtts3）、设备、语言、抽卡次数与
-  当前模型生成参数，为进程内运行期设置（事件回调里经 gen_kwargs 覆盖 config 常量；
-  空值回常量/引擎默认），持久化修改仍以 src/config.py 顶部变量（或同名 env）为准；
-  3) 粤语翻译页：左栏＝普通话文案输入+执行翻译按钮，右栏＝可编辑提示词模板
+- web 三 Tab：1) 语音克隆页（VoiceClone）：左栏＝参考音频（上传即 SenseVoice
+  自动转写并回填）→参考文本框→txt 文件（读入文本框）→待合成文本，右栏＝状态+
+  按抽卡次数展示结果；页面底部折叠区「模型与运行设置」＝模型选择（omnivoice/
+  indextts2/fireredtts3/cosyvoice3/moss_tts_local/qwen3_tts/fish_audio）+ 设备/
+  语言/抽卡次数，为进程内运行期设置，持久化修改仍以 src/config.py 顶部变量
+  （或同名 env）为准；**生成参数（步数/采样）不在界面暴露**，统一由
+  config.py 顶部常量控制（默认最高质量档）；
+  2) 粤语翻译页：左栏＝普通话文案输入+执行翻译按钮，右栏＝可编辑提示词模板
   （默认提示词在根目录 `hymt2_prompt.txt` 纯文本，`config.HYMT2_PROMPT_FILE`
   指向，含 `{text}` 占位，可直接手改）+ 粤语译文输出；推理用 Hy-MT2
   （`llama-completion` 子进程，`LLAMA_CLI` 留空自动构建 `vendor/llama.cpp`），
-  模型首用自动经 HF 下载，长文案自动分块（HYMT2_CHUNK_CHARS）。
+  模型首用自动经 HF 下载，长文案自动分块（HYMT2_CHUNK_CHARS）；
+  3) SRT 字幕生成页：左栏＝音频 wav + 生成按钮，右栏＝SRT 文件下载 + 预览；
+  底部折叠区「模型与 ASR 设置」＝ASR 模型（`SRT_ASR` 默认 qwen3_asr：Qwen3-ASR +
+  ForcedAligner 词级时间轴 + 带标点转写，按标点断句；sensevoice：VAD 分段 +
+  SenseVoice 段级时间轴、无下载）+ 设备/语种 + VAD（合并间隙、最短语音段、ITN）
+  + 输出开关（`SRT_PUNCTUATION` 是否输出标点、`SRT_ENUM_COMMA_AS_SPACE`
+  顿号转空格）与排版（每行宽度、每屏行数、单条最小宽度、单条最长秒数、句间
+  间隙、最短显示秒数）参数，走 `src/subtitle.subtitles()`：词级路径的字幕文本
+  取自带标点转写的逐词片段（`_align_tokens`，对齐器漏词也不丢字），断条优先标点、
+  超时顺延到最近标点，切条不留碎尾（`SRT_MIN_CUE_WIDTH`）并随后把仍过短的条目
+  并入相邻条，渲染不裁行（宁可多一行也不丢文本）。
+- 终端日志在标题下方、Tab 栏上方（页面级共享终端）：三个 Tab 的事件处理器
+  共用同一个会话缓冲（gradio 会话隔离，刷新即清空）。
 - `_run_quiet`/`run_cli` 失败抛 `RuntimeError` 带 stderr 尾部诊断（≈60 行），不在入口裸奔。
 - **web 引擎/模型按需加载**：web.py 启动只启动 UI（无预热）；引擎/模型在点击"生成"时才由
   synthesize 内部定位/自动构建/下载，点击结束（finally）调 `pipeline.release()`（清

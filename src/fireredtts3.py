@@ -62,8 +62,9 @@ _LANG_MAP = {
 }
 
 # 生成参数 → `--request-option key=value`（config 顶部常量；空/0 = 不传 =
-# 引擎默认）。FireRedTTS-3 Base 官方推荐：4 步 / CFG 2.0 / 停止阈值 0.5；
-# 种子沿用 GEN_SEED（-1 = 随机，不传则引擎固定 1234，结果可复现）。
+# 引擎默认）。FireRedTTS-3 Base 官方基准 4 步 / CFG 2.0 / 停止阈值 0.5；
+# 本项目默认取最高质量档（flow 步数加倍，见 config 顶部）。种子沿用
+# GEN_SEED（-1 = 随机，不传则引擎固定 1234，结果可复现）。
 _OPT_MAP = {
     "num_inference_steps": ("num_inference_steps", FIREREDTTS3_INFERENCE_STEPS),  # int
     "guidance_scale": ("guidance_scale", FIREREDTTS3_GUIDANCE_SCALE),              # float

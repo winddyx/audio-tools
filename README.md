@@ -17,7 +17,7 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
 ```
 
 - **入口与编排**：`vc.py`（CLI）、`web.py`（Gradio 双 Tab）共用 `src/` 包，
-  统一走 `pipeline.synthesize()`；Web 生成页的"上传即 ASR"直连
+  统一走 `pipeline.synthesize()`；语音克隆页的"上传即 ASR"直连
   `_transcribe_ref()`。
 - **引擎/模型按需加载**：web 启动只启动 UI（不预热）。首次上传音频（ASR）或
   点击生成时才触发 `audiocpp._ensure_binary()`（定位二进制，缺失自动
@@ -31,16 +31,17 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
   引擎；`hf._ensure_gguf_file()` 在缓存仓库目录内生成带 `.gguf` 的硬链接别名
   （同 inode，不占额外空间；跨文件系统退化为复制），把别名路径交给引擎。
   工程 `models/` 仅供用户手工放置（可选），自动下载绝不写入。
-- **生成参数**：默认 = 官方基准（OmniVoice 32 步/CFG 2.0、IndexTTS-2.5
-  top-k 30/top-p 0.8/temperature 0.8、FireRedTTS-3 4 步/CFG 2.0/停止阈值
-  0.5），常量在 `src/config.py`（同名 env 覆盖，0/空 = 不传回引擎默认）；
-  Web「配置」页可运行期覆盖，持久化仍以 config.py / env 为准。
+- **生成参数**：默认 = 最高质量档（步数按官方基准翻倍：OmniVoice 64 步/CFG
+  2.0、FireRedTTS-3 10 步/CFG 2.0/停止阈值 0.5、CosyVoice-3 25 步/top-k 25；
+  采样类维持官方基准：IndexTTS-2.5 top-k 30/top-p 0.8/temperature 0.8 等），
+  常量在 `src/config.py`（同名 env 覆盖，0/空 = 不传回引擎默认）；
+  **Web 不在界面暴露生成参数**，调整即改 config.py 顶部变量或同名 env。
 
 ## 目录结构
 
 ```
 ├── vc.py                  # CLI 入口（语音克隆 / --transcribe）
-├── web.py                 # Gradio 入口（双 Tab：生成 / 配置）
+├── web.py                 # Gradio 入口（双 Tab：语音克隆 / 粤语翻译）
 └── src/
     ├── config.py          # 全局设置（唯一设置源：顶部变量 + env 覆盖）
     ├── audiocpp.py        # 推理引擎运行器（audio.cpp，模型无关，按需构建/释放）
@@ -52,6 +53,7 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
     ├── qwen3_tts.py       # Qwen3-TTS 12Hz 1.7B Base 模型核心（零样本语音克隆）
     ├── fish_audio.py      # Fish Audio S2-Pro 模型核心（零样本语音克隆）
     ├── sensevoice.py      # SenseVoice-Small ASR 核心（参考音频转写）
+    ├── subtitle.py        # SRT 字幕核心（VAD+SenseVoice 段级 / Qwen3-ASR 词级）
     ├── hf.py              # HuggingFace 下载（本地优先 + hf-mirror 兜底 + .gguf 别名）
     └── pipeline.py        # 统一编排 synthesize()/draw()/release()
 ```
@@ -67,22 +69,32 @@ uv run python vc.py <ref_audio.wav> <text.txt>
 # CLI：ASR 转写参考音频（校对用）
 uv run python vc.py --transcribe <ref_audio.wav>
 
-# Web：http://localhost:38001（模型/设备等在页面「配置」Tab 选择）
+# Web：http://localhost:38001（页面底部「模型与运行设置」选模型/设备/语言）
 uv run python web.py
 ```
 
-## Web 界面（双 Tab）
+## Web 界面（三 Tab）
 
-- **生成页**：左栏自上而下＝参考音频（上传后立即用 SenseVoice 自动转写并
-  回填）→ 参考文本（可修改）→ txt 文件（按钮式上传，读入文本框）→ 待合成
-  文本；右栏＝状态 + 按抽卡次数展示的生成音频槽。
-- **配置页**：置顶模型选择（omnivoice / indextts2 / fireredtts3 /
-  cosyvoice3 / moss_tts_local / qwen3_tts / fish_audio，生成参数组随模型
-  联动显示），下方基本设置＝推理设备 / 语言 / 抽卡次数 / 当前模型生成参数。
-  页面设置为进程内运行期覆盖（空值回 config.py 默认或引擎默认）；
+- **语音克隆页（VoiceClone）**：左栏自上而下＝参考音频（上传后立即用
+  SenseVoice 自动转写并回填）→ 参考文本（可修改）→ txt 文件（按钮式上传，
+  读入文本框）→ 待合成文本；右栏＝状态 + 按抽卡次数展示的生成音频槽。
+- **模型与运行设置**（语音克隆页底部折叠区）：模型选择（omnivoice /
+  indextts2 / fireredtts3 / cosyvoice3 / moss_tts_local / qwen3_tts /
+  fish_audio）+ 推理设备 / 语言 / 抽卡次数。设置为进程内运行期覆盖；
   持久化修改请编辑 `src/config.py` 顶部变量或设置同名环境变量。
+  生成参数（步数 / 采样等）不在界面暴露，统一在 config.py 顶部调整
+  （默认最高质量档）。
+- **粤语翻译页**：普通话文案 → 香港粤语译文（Hy-MT2-1.8B，可编辑提示词）。
+- **SRT 字幕生成页**：左栏上传音频（wav）+ 生成按钮；右栏＝生成的 SRT 文件
+  （点击下载）+ SRT 预览。底部「模型与 ASR 设置」＝ASR 模型（`sensevoice`
+  ＝silero VAD 分段 + SenseVoice 段级时间轴，复用已缓存权重；`qwen3_asr`
+  ＝Qwen3-ASR + Qwen3-ForcedAligner 词级时间轴，首次约 2.3 GB 下载）+
+  设备 / 语种 / ITN + 分段与排版参数（合并间隙、最短语音段、每行宽度、
+  每屏行数、单条最长秒数）。
 - 引擎/模型按需加载：启动即用；首次 ASR 或生成自动构建/下载，任务结束立即
   释放，长时间运行无需重启。
+- 终端日志在标题下方、Tab 栏上方（页面级共享终端）：三个 Tab 的事件处理器
+  都把日志写进同一个会话缓冲（gradio 会话隔离，刷新即清空）。
 
 ## 设置（src/config.py 顶部变量，同名环境变量可覆盖）
 
@@ -92,15 +104,15 @@ uv run python web.py
 | `LANGUAGE` | 空 | 合成语言（如 `zh` / `en` / `yue`）；空 = 自动 |
 | `DRAW_COUNT` | `2` | 抽卡次数 |
 | `OUTPUT_DIR` | 文本所在目录 | CLI 输出目录 |
-| `DEVICE` | 自动 | `cuda` / `xpu` / `mps` / `cpu`（audiocpp 后端映射；web 配置页可选） |
-| `OMNI_INFERENCE_STEPS` | `32` | OmniVoice 去噪步数（0 = 引擎默认） |
+| `DEVICE` | 自动 | `cuda` / `xpu` / `mps` / `cpu`（audiocpp 后端映射；web 底部「模型与运行设置」可选） |
+| `OMNI_INFERENCE_STEPS` | `64` | OmniVoice 去噪步数（最高质量档，官方基准 32；0 = 引擎默认） |
 | `OMNI_GUIDANCE_SCALE` | `2.0` | OmniVoice CFG 引导尺度（空 = 引擎默认） |
 | `INDEXTTS_TOP_K` / `INDEXTTS_TOP_P` / `INDEXTTS_TEMPERATURE` | `30` / `0.8` / `0.8` | IndexTTS-2.5 gpt 层采样参数（官方基准） |
-| `FIREREDTTS3_INFERENCE_STEPS` | `4` | FireRedTTS-3 flow 步数（0 = 引擎默认） |
+| `FIREREDTTS3_INFERENCE_STEPS` | `10` | FireRedTTS-3 flow 步数（最高质量档，官方基准 4；0 = 引擎默认） |
 | `FIREREDTTS3_GUIDANCE_SCALE` | `2.0` | FireRedTTS-3 CFG 引导（空 = 引擎默认） |
 | `FIREREDTTS3_STOP_THRESHOLD` | `0.5` | FireRedTTS-3 AR 停止阈值（空 = 引擎默认） |
 | `COSYVOICE3_TOP_K` | `25` | CosyVoice-3 AR top-k（0 = 引擎默认） |
-| `COSYVOICE3_INFERENCE_STEPS` | `10` | CosyVoice-3 flow 步数（0 = 引擎默认） |
+| `COSYVOICE3_INFERENCE_STEPS` | `25` | CosyVoice-3 flow 步数（最高质量档，官方基准 10；0 = 引擎默认） |
 | `MOSS_TEMPERATURE` / `MOSS_TOP_P` / `MOSS_TOP_K` / `MOSS_REPETITION_PENALTY` | `1.7` / `0.8` / `25` / `1.0` | MOSS-TTS-Local 音频 token 采样参数（空/0 = 引擎默认；该族未暴露 seed） |
 | `QWEN3TTS_TEMPERATURE` / `QWEN3TTS_TOP_P` / `QWEN3TTS_TOP_K` / `QWEN3TTS_REPETITION_PENALTY` | `0.9` / `1.0` / `50` / `1.05` | Qwen3-TTS 主 talker 采样参数（空/0 = 引擎默认；种子用 `GEN_SEED`） |
 | `FISH_AUDIO_TEMPERATURE` / `FISH_AUDIO_TOP_P` / `FISH_AUDIO_TOP_K` / `FISH_AUDIO_MAX_NEW_TOKENS` | `0.8` / `0.8` / `30` / `1024` | Fish Audio S2-Pro 采样参数（空/0 = 引擎默认；种子用 `GEN_SEED`） |
@@ -110,6 +122,19 @@ uv run python web.py
 | `AUDIOCPP_BIN` / `AUDIOCPP_SRC` | 空 | 已编译二进制 / 已有源码（留空自动构建到 vendor/） |
 | `AUDIOCPP_REF` | `dev` | 引擎 clone/构建分支（cosyvoice3 目前仅在 dev 分支实现；main 合并后可改回 `main`） |
 | `ASR_MODEL` | 空 | 本地 SenseVoice GGUF 路径（默认经 HF 下载） |
+| `SRT_ASR` | `qwen3_asr` | SRT 字幕的 ASR 路径：`qwen3_asr`（Qwen3-ASR + ForcedAligner，词级时间轴 + 带标点转写，默认）/ `sensevoice`（VAD 分段 + SenseVoice，段级时间轴、无下载） |
+| `SRT_VAD_MERGE_GAP` / `SRT_VAD_MIN_SPEECH` | `0.5` / `0.3` | VAD 相邻段合并间隙 / 丢弃的最短语音段（秒；仅 sensevoice 路径） |
+| `SRT_ITN` | `true` | SenseVoice 反向文本规范化（数字/标点） |
+| `SRT_QWEN3_PUNCTUATION` | `true` | Qwen3-ASR 保留标点（`preserve_punctuation`）：带标点转写用于按标点断句与输出 |
+| `SRT_PUNCTUATION` | `false` | 字幕文本是否输出标点（关掉只留正文；断句仍按标点判断） |
+| `SRT_ENUM_COMMA_AS_SPACE` | `true` | 顿号（、）输出为空格：`赣州、贵阳` → `赣州 贵阳` |
+| `SRT_MAX_LINE_WIDTH` / `SRT_MAX_LINES` | `32` / `1` | 字幕每行宽度（CJK 按 2 计，32 ≈ 16 汉字）/ 每屏最大行数 |
+| `SRT_MAX_BLOCK_SECONDS` / `SRT_MAX_GAP_SECONDS` / `SRT_MIN_BLOCK_SECONDS` | `6.0` / `1.0` / `0.8` | 单条字幕最长秒数 / 句间断句间隔 / 单条最短秒数 |
+| `SRT_MIN_CUE_WIDTH` | `8` | 碎条阈值（宽度，8 = 4 汉字）：切条不留这么短的尾巴，过短的条目并入相邻条（0 = 关闭） |
+| `SRT_SENTENCE_BREAK_RATIO` | `0.5` | 句末标点处成句即断所需的最小宽度占比（占单行宽度） |
+| `SRT_BLOCK_EXTEND_SECONDS` | `1.5` | 超最长秒数但句内无标点可退时，向后顺延到最近标点的预算（秒） |
+| `SRT_QWEN3_ASR_FILE` | `Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf` | Qwen3-ASR 权重（HF 仓库 `audio-cpp/audio.cpp-gguf`；`SRT_QWEN3_ASR_LOCAL` 可指本地文件） |
+| `SRT_QWEN3_ALIGNER_FILE` | `Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf` | Qwen3-ForcedAligner 权重（词级时间戳；`SRT_QWEN3_ALIGNER_LOCAL` 可指本地文件） |
 | `WEB_IP` / `WEB_PORT` | `0.0.0.0` / `38001` | Web 监听 |
 | `HF_ENDPOINT` | 空 | 直连失败自动切 hf-mirror（`HF_NO_MIRROR_FALLBACK=1` 关闭） |
 

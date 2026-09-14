@@ -6,6 +6,7 @@ audio-tools — 核心包（src/）
 - audiocpp：推理引擎运行器（audio.cpp / audiocpp_cli，模型无关）
 - omnivoice / indextts2：TTS 模型核心（语音克隆；TTS_MODEL 切换）
 - sensevoice：ASR 核心（SenseVoice-Small，audiocpp sense_asr 族）
+- subtitle：SRT 字幕核心（VAD 分段 + SenseVoice，或 Qwen3-ASR + ForcedAligner）
 - hf：HuggingFace 下载与缓存管理（本地优先 + hf-mirror 兜底）
 - pipeline：统一编排 synthesize()/draw()（ASR → TTS → 命名 → 写盘）
 
@@ -22,6 +23,7 @@ from .sensevoice import _transcribe_ref
 from .audiocpp import AudioResult, ChunkInfo
 from .hf import _HF_MIRROR, _hf_download, _switch_hf_endpoint, resolve_path
 from .pipeline import SynthesisResult, draw, synthesize
+from .subtitle import SrtResult, subtitles
 
 __all__ = [
     "Config", "_to_bool", "_quiet_hf_logs", "get_best_device",
@@ -29,4 +31,5 @@ __all__ = [
     "AudioResult", "ChunkInfo",
     "_HF_MIRROR", "_hf_download", "_switch_hf_endpoint", "resolve_path",
     "SynthesisResult", "synthesize", "draw",
+    "SrtResult", "subtitles",
 ]

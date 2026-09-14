@@ -54,8 +54,9 @@ _SUPPORTED_LANGS = {"", "zh", "en", "ja", "ko", "de", "es", "fr", "it", "ru",
 _TEMPLATE = "zero_shot"
 
 # 生成参数 → `--request-option key=value`（config 顶部常量；空/0 = 不传 =
-# 引擎默认）。官方基准：AR top-k 25、flow 10 步；种子沿用 GEN_SEED（-1 =
-# 随机，不传则引擎固定 1986，可复现）。
+# 引擎默认）。官方基准 AR top-k 25、flow 10 步；本项目默认取最高质量档
+# （flow 步数加倍，见 config 顶部）。种子沿用 GEN_SEED（-1 = 随机，不传则
+# 引擎固定 1986，可复现）。
 _OPT_MAP = {
     "top_k": ("top_k", COSYVOICE3_TOP_K),                    # int
     "num_inference_steps": ("num_inference_steps", COSYVOICE3_INFERENCE_STEPS),  # int

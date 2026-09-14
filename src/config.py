@@ -81,6 +81,10 @@ class Config:
     transcribe: bool = False  # --transcribe：转写 ref_audio 并打印文本
     asr_model: str = ""       # 本地 SenseVoice GGUF 文件路径（默认用 ASR_GGUF_*）
 
+    # ── SRT 字幕生成（音频 → 带时间轴字幕；web「SRT 字幕生成」页）──
+    srt_asr: str = ""         # "sensevoice" | "qwen3_asr"；留空用 SRT_ASR
+    srt_audio: str = ""       # 输入音频路径（wav）
+
 
 # ── 项目内固定路径（模型/引擎可换，目录本身不可调）────────
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -112,14 +116,17 @@ AUDIOCPP_DEBUG = _env_bool("AUDIOCPP_DEBUG", False)
 # 本文件只放默认选择与本地目录。
 TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 
-# ── 生成参数（各模型核心在拼 CLI 时消费；默认 = 官方基准，env 可覆盖）──
-# 默认值即各模型的官方基准（不改引擎质量/速度取舍，只是显式落在 config）：
-# - OmniVoice：去噪步数 32 / CFG 引导 2.0 + 随机种子
+# ── 生成参数（各模型核心在拼 CLI 时消费；默认 = 最高质量档，env 可覆盖）──
+# 默认值取"最高质量档"：迭代/去噪/flow 步数按官方基准翻倍或上调，采样类参数
+# 维持各模型官方基准（音色随机性与表现力不变）。默认即质量优先、耗时更长，
+# 需要速度档时把步数设回官方基准（OmniVoice 32 / FireRedTTS-3 4 /
+# CosyVoice-3 10）或经同名 env 覆盖。各模型当前默认与官方基准：
+# - OmniVoice：去噪步数 64（官方 32 的翻倍档）/ CFG 引导 2.0 + 随机种子
 # - IndexTTS-2.5：gpt 层 top-k 30 / top-p 0.8 / temperature 0.8 + 随机种子
-# - FireRedTTS-3 Base（零样本克隆）：flow 4 步 / CFG 2.0 / 停止阈值 0.5 +
-#   随机种子（不传种子时引擎固定 1234，可复现）
-# - CosyVoice-3（零样本克隆）：AR top-k 25 / flow 10 步 + 随机种子（不传时
-#   引擎固定 1986，可复现）
+# - FireRedTTS-3 Base（零样本克隆）：flow 10 步（官方 4 的加倍档）/ CFG 2.0 /
+#   停止阈值 0.5 + 随机种子（不传种子时引擎固定 1234，可复现）
+# - CosyVoice-3（零样本克隆）：AR top-k 25 / flow 25 步（官方 10 的加倍档）+
+#   随机种子（不传时引擎固定 1986，可复现）
 # - MOSS-TTS-Local v1.5（零样本克隆，模型自动多语言）：音频 token 采样
 #   temperature 1.7 / top-p 0.8 / top-k 25 / repetition penalty 1.0（文本
 #   门控与分块走引擎默认；该族未暴露 seed，采样随机不可复现）
@@ -130,16 +137,16 @@ TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 #   top-k 30 / top-p 0.8 / 单 chunk 上限 max_new_tokens 1024 + 随机种子
 #   （不传时引擎随机，同值可复现）
 # 设 0 / 空 / -1 可回到"不传 flag = 引擎默认"。
-OMNI_INFERENCE_STEPS = _env_int("OMNI_INFERENCE_STEPS", 32)  # 0 = 引擎默认
+OMNI_INFERENCE_STEPS = _env_int("OMNI_INFERENCE_STEPS", 64)  # 0 = 引擎默认；官方基准 32
 OMNI_GUIDANCE_SCALE = _env("OMNI_GUIDANCE_SCALE", "2.0")     # 空 = 引擎默认
 INDEXTTS_TOP_K = _env_int("INDEXTTS_TOP_K", 30)              # 0 = 引擎默认
 INDEXTTS_TOP_P = _env("INDEXTTS_TOP_P", "0.8")               # 空 = 引擎默认
 INDEXTTS_TEMPERATURE = _env("INDEXTTS_TEMPERATURE", "0.8")   # 空 = 引擎默认
-FIREREDTTS3_INFERENCE_STEPS = _env_int("FIREREDTTS3_INFERENCE_STEPS", 4)  # 0 = 引擎默认
+FIREREDTTS3_INFERENCE_STEPS = _env_int("FIREREDTTS3_INFERENCE_STEPS", 10)  # 0 = 引擎默认；官方基准 4
 FIREREDTTS3_GUIDANCE_SCALE = _env("FIREREDTTS3_GUIDANCE_SCALE", "2.0")    # 空 = 引擎默认
 FIREREDTTS3_STOP_THRESHOLD = _env("FIREREDTTS3_STOP_THRESHOLD", "0.5")    # 空 = 引擎默认
 COSYVOICE3_TOP_K = _env_int("COSYVOICE3_TOP_K", 25)          # 0 = 引擎默认
-COSYVOICE3_INFERENCE_STEPS = _env_int("COSYVOICE3_INFERENCE_STEPS", 10)   # 0 = 引擎默认
+COSYVOICE3_INFERENCE_STEPS = _env_int("COSYVOICE3_INFERENCE_STEPS", 25)   # 0 = 引擎默认；官方基准 10
 MOSS_TEMPERATURE = _env("MOSS_TEMPERATURE", "1.7")            # 空 = 引擎默认
 MOSS_TOP_P = _env("MOSS_TOP_P", "0.8")                        # 空 = 引擎默认
 MOSS_TOP_K = _env_int("MOSS_TOP_K", 25)                       # 0 = 引擎默认
@@ -169,6 +176,65 @@ TEXT_CHUNK_MODE = _env("TEXT_CHUNK_MODE", "")
 # （FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp），与旧 llama-funasr 包不同。
 ASR_GGUF_REPO = _env("ASR_GGUF_REPO", "FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp")
 ASR_GGUF_BASE = _env("ASR_GGUF_BASE", "sensevoice-small-q8-audiocpp-v1.gguf")
+
+
+# ── SRT 字幕生成（音频 → 字幕；见 src/subtitle.py）──────────
+# 两条 ASR 路径（SRT_ASR 或调用方 kwargs 切换）：
+# - qwen3_asr（默认）：Qwen3-ASR 转写 + Qwen3-ForcedAligner 词级时间戳
+#   （引擎 `--words-out`，须同时给 --session-option
+#   qwen3_asr.forced_aligner_model_path）；权重经 HF 下载到默认缓存。
+#   同时取 `--text-out` 的带标点转写，用于按标点断句。
+# - sensevoice：silero VAD 分段（audiocpp `--task vad`）→ 逐段切 wav →
+#   sense_asr 批量转写（--batch-audio-dir，模型只加载一次）→ 段级时间轴；
+#   复用已缓存 SenseVoice 权重，无额外下载，时间轴精度低于词级。
+SRT_ASR = _env("SRT_ASR", "qwen3_asr")   # qwen3_asr | sensevoice
+
+# silero VAD 模型目录（引擎自带资源，随 vendor/audiocpp 一同 clone）。
+# 留空 = <audiocpp 源码目录>/assets/framework/models/silero_vad。
+SRT_VAD_MODEL = _env("SRT_VAD_MODEL", "")
+# VAD 分段与合并：相邻语音段间隔小于合并间隙时并成一句；短于最小时长的段丢弃
+SRT_VAD_MERGE_GAP = _env("SRT_VAD_MERGE_GAP", "0.5")     # 秒
+SRT_VAD_MIN_SPEECH = _env("SRT_VAD_MIN_SPEECH", "0.3")   # 秒
+# SenseVoice 反向文本规范化（数字/标点）：True = 输出规范文本
+SRT_ITN = _env_bool("SRT_ITN", True)
+
+# 时间轴与排版（两条路径共用；行宽按 CJK=2 / 其余=1 计）
+# 中文一行 16 汉字（宽度 32）是国内字幕通行上限，故默认 32 而非 42/36。
+SRT_MAX_LINE_WIDTH = _env_int("SRT_MAX_LINE_WIDTH", 32)   # 每行宽度上限（≈16 汉字）
+SRT_MAX_LINES = _env_int("SRT_MAX_LINES", 1)              # 单条字幕最多行数
+SRT_MAX_BLOCK_SECONDS = _env("SRT_MAX_BLOCK_SECONDS", "6.0")  # 单条字幕最长秒数
+SRT_MAX_GAP_SECONDS = _env("SRT_MAX_GAP_SECONDS", "1.0")      # 句间断句间隔（秒）
+SRT_MIN_BLOCK_SECONDS = _env("SRT_MIN_BLOCK_SECONDS", "0.8")  # 单条字幕最短秒数
+# 成句标点后即可断句的最小宽度占单行宽度的比例：过短的半句不单独成条
+SRT_SENTENCE_BREAK_RATIO = _env("SRT_SENTENCE_BREAK_RATIO", "0.5")
+# 已超最长秒数、但句内没有标点可退时，向后顺延到最近标点的预算（秒）：
+# 避免把半句话切成 "表达。" 这类尾巴（0 = 不顺延，到点即断）
+SRT_BLOCK_EXTEND_SECONDS = _env("SRT_BLOCK_EXTEND_SECONDS", "1.5")
+# 碎条阈值（宽度，CJK=2）：切条时不给下一条留这么短的尾巴，渲染前再把
+# 仍过短的条目并入相邻条（优先上一条），避免 "间"、"轮" 这类一两字孤条。
+# 8 = 4 个汉字；0 = 关闭
+SRT_MIN_CUE_WIDTH = _env_int("SRT_MIN_CUE_WIDTH", 8)
+# 字幕文本是否输出标点（断句仍按标点判断，只影响输出文本）：
+# False = 去掉标点，只留正文
+SRT_PUNCTUATION = _env_bool("SRT_PUNCTUATION", False)
+# 顿号（、）在字幕文本里输出为空格：中文列举常用空格分隔，
+# "赣州、贵阳、武汉" → "赣州 贵阳 武汉"（关掉则按 SRT_PUNCTUATION 处理）
+SRT_ENUM_COMMA_AS_SPACE = _env_bool("SRT_ENUM_COMMA_AS_SPACE", True)
+
+# Qwen3-ASR + Qwen3-ForcedAligner（词级时间戳路径；本地手放优先，缺失经 HF
+# 下载并留在 HF 默认缓存，工程 models/ 仅支持手工放置，见 hf._ensure_gguf_file）
+SRT_QWEN3_ASR_REPO = _env("SRT_QWEN3_ASR_REPO", "audio-cpp/audio.cpp-gguf")
+SRT_QWEN3_ASR_FILE = _env(
+    "SRT_QWEN3_ASR_FILE", "Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf")
+SRT_QWEN3_ASR_LOCAL = _env("SRT_QWEN3_ASR_LOCAL", "")   # 手工放置的 .gguf 绝对路径
+SRT_QWEN3_ALIGNER_REPO = _env("SRT_QWEN3_ALIGNER_REPO", "audio-cpp/audio.cpp-gguf")
+SRT_QWEN3_ALIGNER_FILE = _env(
+    "SRT_QWEN3_ALIGNER_FILE",
+    "Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf")
+SRT_QWEN3_ALIGNER_LOCAL = _env("SRT_QWEN3_ALIGNER_LOCAL", "")
+# Qwen3-ASR 保留标点（引擎 request-option qwen3_asr.preserve_punctuation）：
+# 带标点的转写文本用于按标点断句（--words-out 的词条本身不含标点）
+SRT_QWEN3_PUNCTUATION = _env_bool("SRT_QWEN3_PUNCTUATION", True)
 
 
 # ── Web 界面 ──────────────────────────────────────────────
