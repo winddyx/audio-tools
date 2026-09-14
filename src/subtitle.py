@@ -49,6 +49,9 @@ from .config import (
     SRT_ASR,
     SRT_BLOCK_EXTEND_SECONDS,
     SRT_ENUM_COMMA_AS_SPACE,
+    SRT_HOTWORDS,
+    SRT_HOTWORDS_FILE,
+    SRT_HOTWORDS_PROMPT,
     SRT_ITN,
     SRT_MAX_BLOCK_SECONDS,
     SRT_MAX_GAP_SECONDS,
@@ -132,6 +135,39 @@ def _pick_bool(kwargs: dict, key: str, default: bool) -> bool:
     if v is None or v == "":
         return bool(default)
     return bool(v)
+
+
+def _hotwords_text(hotwords, cfg: Config) -> str:
+    """ASR 热词/上下文文本（仅 qwen3_asr 路径使用）。
+
+    取值顺序：调用方 kwargs → cfg.srt_hotwords → config.SRT_HOTWORDS →
+    工程根目录 hotword.txt（web 每次提交字幕任务时写回的文件）。
+    """
+    text = str(hotwords if hotwords is not None
+               else cfg.srt_hotwords or SRT_HOTWORDS).strip()
+    if text:
+        return text
+    if SRT_HOTWORDS_FILE and os.path.isfile(SRT_HOTWORDS_FILE):
+        try:
+            with open(SRT_HOTWORDS_FILE, encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+    return ""
+
+
+def _hotwords_prompt(hotwords: str) -> str:
+    """把热词拼成 Qwen3-ASR 的系统提示词（引擎 `--text`）。
+
+    模板 SRT_HOTWORDS_PROMPT 含 {hotwords} 时替换，不含时拼在模板末尾；
+    模板留空 = 直接把热词文本当系统提示词。
+    """
+    tpl = str(SRT_HOTWORDS_PROMPT or "").strip()
+    if not tpl:
+        return hotwords
+    if "{hotwords}" in tpl:
+        return tpl.replace("{hotwords}", hotwords)
+    return tpl + hotwords
 
 
 def _options(kwargs: dict) -> SrtOptions:
@@ -808,12 +844,17 @@ def _read_text_file(path: str) -> str:
     return ""
 
 
-def _qwen3_words(binary: str, wav16: str, cfg: Config, logger: logging.Logger
+def _qwen3_words(binary: str, wav16: str, cfg: Config, logger: logging.Logger,
+                 hotwords: str = ""
                  ) -> tuple[list[tuple[str, float, float]], str]:
     """Qwen3-ASR + ForcedAligner：返回 (词级 (词, 起秒, 止秒), 带标点转写文本)。
 
     `--words-out` 的词条不含标点，标点只来自 `--text-out`（由
     SRT_QWEN3_PUNCTUATION 控制引擎 request-option preserve_punctuation）。
+
+    hotwords 非空时经引擎 `--text` 作为 Qwen3-ASR 的系统提示词注入（引擎侧
+    src/models/qwen3_asr/session.cpp 把它当 request.context 拼进 chat 模板），
+    用于专有名词/术语纠偏；引擎不做词表强制匹配，成句的提示更稳。
     """
     asr = _ensure_qwen3_model(SRT_QWEN3_ASR_REPO, SRT_QWEN3_ASR_FILE,
                               SRT_QWEN3_ASR_LOCAL, logger, "Qwen3-ASR")
@@ -836,6 +877,11 @@ def _qwen3_words(binary: str, wav16: str, cfg: Config, logger: logging.Logger
             cmd += ["--request-option", "qwen3_asr.preserve_punctuation=true"]
         if cfg.language:
             cmd += ["--language", str(cfg.language)]
+        if hotwords:
+            # 引擎把 --text 当 Qwen3-ASR 的系统提示词（request.context）
+            cmd += ["--text", _hotwords_prompt(hotwords)]
+            logger.info("ASR 热词/上下文已注入（%d 字）：%s",
+                        len(hotwords), hotwords)
         logger.info("Qwen3-ASR 转写 + 强制对齐（词级时间戳）…")
         run_cli(cmd, cfg.device, logger, cwd=_src_dir())
         raw = []
@@ -869,6 +915,8 @@ def subtitles(cfg: Config, logger: logging.Logger, **kwargs) -> SrtResult:
       asr_backend（qwen3_asr | sensevoice；留空用 cfg.srt_asr / SRT_ASR）；
       language（留空用 cfg.language，再留空 = 模型自动）；
       itn（SenseVoice 反向文本规范化；留空用 SRT_ITN）；
+      hotwords（ASR 热词/上下文，**仅 qwen3_asr 生效**：经引擎 `--text` 作为
+        系统提示词注入；留空用 cfg.srt_hotwords / SRT_HOTWORDS / hotword.txt）；
       punctuation（字幕文本是否输出标点；留空用 SRT_PUNCTUATION）、
       enum_comma_space（顿号转空格；留空用 SRT_ENUM_COMMA_AS_SPACE）、
       min_cue_width（碎条阈值宽度；留空用 SRT_MIN_CUE_WIDTH，0 = 关闭）、
@@ -886,6 +934,8 @@ def subtitles(cfg: Config, logger: logging.Logger, **kwargs) -> SrtResult:
     language = kwargs.pop("language", None) or cfg.language or None
     itn = kwargs.pop("itn", None)
     itn = SRT_ITN if itn is None or itn == "" else bool(itn)
+    # 热词/上下文：kwargs → cfg.srt_hotwords → SRT_HOTWORDS → hotword.txt
+    hotwords = _hotwords_text(kwargs.pop("hotwords", None), cfg)
     opts = _options(kwargs)
 
     if not audio or not os.path.isfile(audio):
@@ -902,13 +952,18 @@ def subtitles(cfg: Config, logger: logging.Logger, **kwargs) -> SrtResult:
         duration = sf.info(wav16).frames / float(_SR)
 
         if backend in ("qwen3", "qwen3_asr"):
-            words, transcript = _qwen3_words(binary, wav16, cfg, logger)
+            words, transcript = _qwen3_words(binary, wav16, cfg, logger,
+                                             hotwords)
             if transcript:
                 logger.info("转写文本: %s", transcript)
             breaks = _align_tokens(transcript, [w[0] for w in words])
             cues = _cues_from_words(words, breaks, opts)
             backend = "qwen3_asr"
         else:
+            if hotwords:
+                logger.warning(
+                    "SenseVoice（sense_asr 族）没有上下文接口，热词已被忽略"
+                    "（热词仅 qwen3_asr 路径生效）")
             spans = _vad_segments(binary, wav16, cfg, logger,
                                   float(_pick(kwargs, "vad_merge_gap",
                                               SRT_VAD_MERGE_GAP)),

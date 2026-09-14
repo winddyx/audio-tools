@@ -49,6 +49,8 @@ from src import (
 from src.config import (
     SRT_ASR,
     SRT_ENUM_COMMA_AS_SPACE,
+    SRT_HOTWORDS,
+    SRT_HOTWORDS_FILE,
     SRT_ITN,
     SRT_MAX_BLOCK_SECONDS,
     SRT_MAX_GAP_SECONDS,
@@ -169,6 +171,30 @@ def _cfg(model: str, device: str, **kw) -> Config:
                   device="" if device == "auto" else device, **kw)
 
 
+def _read_hotwords() -> str:
+    """SRT 页热词框初始值：根目录 hotword.txt 优先，其次 config.SRT_HOTWORDS。"""
+    if SRT_HOTWORDS_FILE:
+        try:
+            with open(SRT_HOTWORDS_FILE, encoding="utf-8") as f:
+                text = f.read().strip()
+            if text:
+                return text
+        except OSError:
+            pass
+    return SRT_HOTWORDS or ""
+
+
+def _write_hotwords(text: str) -> None:
+    """把本次提交的热词写回根目录 hotword.txt（热记录：每次提交写一次）。"""
+    if not SRT_HOTWORDS_FILE:
+        return
+    try:
+        with open(SRT_HOTWORDS_FILE, "w", encoding="utf-8") as f:
+            f.write((text or "").strip() + "\n")
+    except OSError as e:
+        logger.warning("热词记录写入失败（%s）: %s", SRT_HOTWORDS_FILE, e)
+
+
 def build_demo() -> gr.Blocks:
     os.makedirs(_TMP_DIR, exist_ok=True)
 
@@ -280,19 +306,26 @@ def build_demo() -> gr.Blocks:
             with gr.Tab("SRT 字幕生成 SRT Subtitles"):
                 with gr.Row():
                     with gr.Column(scale=1):
+                        srt_hotwords = gr.Textbox(
+                            label="1. ASR 热词/上下文 Hotwords（仅 Qwen3-ASR）",
+                            lines=3, interactive=True,
+                            value=_read_hotwords(),
+                            placeholder="专有名词/术语，如：赣州、贵阳、腾讯会议…"
+                                        "（每次生成写入根目录 hotword.txt）",
+                        )
                         srt_audio = gr.Audio(
-                            label="1. 音频文件 Audio (wav)",
+                            label="2. 音频文件 Audio (wav)",
                             type="filepath",
                         )
                         srt_btn = gr.Button(
                             "生成字幕 Generate SRT", variant="primary")
                     with gr.Column(scale=1):
                         srt_file = gr.File(
-                            label="2. SRT 字幕文件（点击下载）",
+                            label="3. SRT 字幕文件（点击下载）",
                             interactive=False,
                         )
                         srt_preview = gr.Textbox(
-                            label="3. SRT 预览 Preview",
+                            label="4. SRT 预览 Preview",
                             lines=14, interactive=False,
                             placeholder="生成后在此预览字幕内容…",
                         )
@@ -533,18 +566,25 @@ def build_demo() -> gr.Blocks:
                     draw_count, log_state],
             outputs=[*outputs, terminal, log_state],
         )
-        def _srt_fn(audio, model_v, device_v, lang_v, itn_v, punct_v,
+        def _srt_fn(hotwords_v, audio, model_v, device_v, lang_v, itn_v, punct_v,
                     enum_space_v, gap_v, min_speech_v, width_v, lines_v,
                     min_cue_v, block_v, max_gap_v, min_block_v, buf):
             """点击生成字幕：src.subtitle.subtitles（Qwen3-ASR+ForcedAligner 词级
-            或 VAD+SenseVoice 段级）→ SRT 文件 + 预览，日志入终端框。"""
+            或 VAD+SenseVoice 段级）→ SRT 文件 + 预览，日志入终端框。
+
+            热词框内容每次提交都写回根目录 hotword.txt（热记录），并经
+            cfg.srt_hotwords 传给 subtitle（仅 qwen3_asr 路径生效）。
+            """
             if not audio:
                 buf.append(_term_line("WARN", "未上传音频文件，已取消。"))
                 return gr.update(), gr.update(), _term_html(buf), buf
             _CTX_BUF.set(buf)
             try:
                 m = (model_v or "qwen3_asr").strip().lower()
+                hot_v = (hotwords_v or "").strip()
+                _write_hotwords(hot_v)
                 cfg = _cfg("", device_v, srt_asr=m, srt_audio=audio,
+                           srt_hotwords=hot_v,
                            language="" if (lang_v or "Auto") == "Auto"
                            else lang_v)
                 audio_base = (os.path.splitext(os.path.basename(audio))[0]
@@ -588,10 +628,10 @@ def build_demo() -> gr.Blocks:
 
         srt_btn.click(
             _srt_fn,
-            inputs=[srt_audio, srt_model, srt_device, srt_language, srt_itn,
-                    srt_punctuation, srt_enum_space, srt_gap, srt_min_speech,
-                    srt_width, srt_lines, srt_min_cue, srt_block, srt_max_gap,
-                    srt_min_block, log_state],
+            inputs=[srt_hotwords, srt_audio, srt_model, srt_device, srt_language,
+                    srt_itn, srt_punctuation, srt_enum_space, srt_gap,
+                    srt_min_speech, srt_width, srt_lines, srt_min_cue,
+                    srt_block, srt_max_gap, srt_min_block, log_state],
             outputs=[srt_file, srt_preview, terminal, log_state],
         )
         hy_btn.click(

@@ -61,6 +61,11 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   SRT 由本模块排版：断条/断行优先标点（句末成句即断、句内标点作回退点），
   超最长秒数且句内无标点时按 `SRT_BLOCK_EXTEND_SECONDS` 顺延到最近标点；
   行宽按 CJK=2 计、中文不插空格。推理全在引擎侧。
+  热词/上下文（`SRT_HOTWORDS` 或 kwargs `hotwords`，**仅 qwen3_asr 生效**）
+  经引擎 `--text` 作为 Qwen3-ASR 的系统提示词注入（引擎侧把它当
+  `request.context` 拼进 chat 模板），按 `SRT_HOTWORDS_PROMPT` 模板拼接
+  （留空 = 原样用热词文本）；SenseVoice 无上下文接口，忽略并告警。取值顺序
+  kwargs → `cfg.srt_hotwords` → `SRT_HOTWORDS` → 根目录 `hotword.txt`。
 - `hf.py` — HF 下载：本地优先 + hf-mirror 兜底（`HF_NO_MIRROR_FALLBACK=1` 关闭）。
 - `hymt2.py` — LLM 文案翻译（普通话→粤语，TTS 输入前处理）：Hy-MT2-1.8B
   （腾讯开源，官方支持粤语 yue）+ `llama-completion`（llama.cpp 子进程；
@@ -112,7 +117,9 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   指向，含 `{text}` 占位，可直接手改）+ 粤语译文输出；推理用 Hy-MT2
   （`llama-completion` 子进程，`LLAMA_CLI` 留空自动构建 `vendor/llama.cpp`），
   模型首用自动经 HF 下载，长文案自动分块（HYMT2_CHUNK_CHARS）；
-  3) SRT 字幕生成页：左栏＝音频 wav + 生成按钮，右栏＝SRT 文件下载 + 预览；
+  3) SRT 字幕生成页：左栏＝ASR 热词/上下文输入框（仅 Qwen3-ASR 生效；初始值
+  读根目录 `hotword.txt`，每次点击生成写回一次）+ 音频 wav + 生成按钮，右栏＝
+  SRT 文件下载 + 预览；
   底部折叠区「模型与 ASR 设置」＝ASR 模型（`SRT_ASR` 默认 qwen3_asr：Qwen3-ASR +
   ForcedAligner 词级时间轴 + 带标点转写，按标点断句；sensevoice：VAD 分段 +
   SenseVoice 段级时间轴、无下载）+ 设备/语种 + VAD（合并间隙、最短语音段、ITN）

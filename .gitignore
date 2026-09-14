@@ -23,6 +23,9 @@ vendor/
 # Web 生成临时目录（项目内 .tmp，退出时清理）
 .tmp/
 
+# SRT 页 ASR 热词记录（web 每次提交字幕任务写入一次，属本地数据）
+hotword.txt
+
 # Reasonix 工具目录
 .reasonix/
 

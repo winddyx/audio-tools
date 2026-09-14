@@ -84,6 +84,7 @@ class Config:
     # ── SRT 字幕生成（音频 → 带时间轴字幕；web「SRT 字幕生成」页）──
     srt_asr: str = ""         # "sensevoice" | "qwen3_asr"；留空用 SRT_ASR
     srt_audio: str = ""       # 输入音频路径（wav）
+    srt_hotwords: str = ""    # 热词/上下文（仅 qwen3_asr）；留空用 SRT_HOTWORDS / hotword.txt
 
 
 # ── 项目内固定路径（模型/引擎可换，目录本身不可调）────────
@@ -235,6 +236,21 @@ SRT_QWEN3_ALIGNER_LOCAL = _env("SRT_QWEN3_ALIGNER_LOCAL", "")
 # Qwen3-ASR 保留标点（引擎 request-option qwen3_asr.preserve_punctuation）：
 # 带标点的转写文本用于按标点断句（--words-out 的词条本身不含标点）
 SRT_QWEN3_PUNCTUATION = _env_bool("SRT_QWEN3_PUNCTUATION", True)
+
+# ASR 热词/上下文（**仅 qwen3_asr 路径生效**）：引擎把命令行 `--text` 当作
+# Qwen3-ASR 的系统提示词（src/models/qwen3_asr/tokenizer_text.cpp 的
+# default_chat_prompt），热词由此影响转写；SenseVoice（sense_asr 族）没有
+# 上下文接口，该设置被忽略。引擎不做词表强制匹配，热词写成提示句通常更稳，
+# 故按下面的模板拼接（SRT_HOTWORDS_PROMPT 留空 = 直接把热词文本当系统提示词）。
+SRT_HOTWORDS = _env("SRT_HOTWORDS", "")
+SRT_HOTWORDS_PROMPT = _env(
+    "SRT_HOTWORDS_PROMPT",
+    "本段音频涉及以下专有名词与术语，请在转写中优先使用正确写法：{hotwords}")
+# 热词文本文件（工程根目录，gitignore）：SRT_HOTWORDS 与调用方 kwargs 都没给
+# 热词时读它。web「SRT 字幕生成」页热词框的默认值取自该文件，每次点击生成时
+# 写回一次（热记录：下次打开页面仍是上次用过的热词）。留空 = 不读写文件。
+SRT_HOTWORDS_FILE = _env(
+    "SRT_HOTWORDS_FILE", os.path.join(_PROJECT_ROOT, "hotword.txt"))
 
 
 # ── Web 界面 ──────────────────────────────────────────────
