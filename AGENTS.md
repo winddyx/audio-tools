@@ -107,7 +107,9 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   输出文件规范；vc.py 终端以 `[i/6]` 显示，长合成每 10s 心跳报进度。
 - web 三 Tab：1) 语音克隆页（VoiceClone）：左栏＝参考音频（上传即 SenseVoice
   自动转写并回填）→参考文本框→txt 文件（读入文本框）→待合成文本，右栏＝状态+
-  按抽卡次数展示结果；页面底部折叠区「模型与运行设置」＝模型选择（omnivoice/
+  按抽卡次数展示结果（`_clone_fn` 是生成器事件处理器：每合成出一个结果就
+  yield 上屏并刷新终端，不等全部抽卡结束）；页面底部折叠区
+  「模型与运行设置」＝模型选择（omnivoice/
   indextts2/fireredtts3/cosyvoice3/moss_tts_local/qwen3_tts/fish_audio）+ 设备/
   语言/抽卡次数，为进程内运行期设置，持久化修改仍以 src/config.py 顶部变量
   （或同名 env）为准；**生成参数（步数/采样）不在界面暴露**，统一由

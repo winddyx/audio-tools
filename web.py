@@ -477,9 +477,20 @@ def build_demo() -> gr.Blocks:
                 % (os.path.basename(file_path), len(content))))
             return gr.update(value=content), _term_html(buf), buf
 
+        def _clone_slots(paths: list) -> list:
+            """按已产出的结果列表生成 _MAX_DRAWS 个音频槽更新（未产出则隐藏）。"""
+            return [
+                gr.update(visible=True, value=paths[i])
+                if i < len(paths) else gr.update(visible=False)
+                for i in range(_MAX_DRAWS)
+            ]
+
         def _clone_fn(text_v, ref_aud, ref_txt, model_v, device_v, lang_v,
                       draw_v, buf):
             """点击生成：按底部「模型与运行设置」逐次抽卡，日志写入终端框。
+
+            生成器事件处理器：每合成一个结果立即 yield 上屏（该结果与当前
+            终端日志同一次更新），不再等全部抽卡结束才显示。
 
             生成参数不来自界面：config.py 顶部常量（默认最高质量档）由各
             模型核心在拼 CLI 时消费，此处不传 gen_kwargs。
@@ -487,11 +498,14 @@ def build_demo() -> gr.Blocks:
             draw_v = max(1, min(int(draw_v or 2), _MAX_DRAWS))
             if not text_v or not text_v.strip():
                 buf.append(_term_line("WARN", "未输入待合成文本，已取消。"))
-                return (*([gr.update()] * _MAX_DRAWS), _term_html(buf), buf)
+                yield (*_clone_slots([]), _term_html(buf), buf)
+                return
             if not ref_aud:
                 buf.append(_term_line("WARN", "未上传参考音频，已取消。"))
-                return (*([gr.update()] * _MAX_DRAWS), _term_html(buf), buf)
+                yield (*_clone_slots([]), _term_html(buf), buf)
+                return
             _CTX_BUF.set(buf)
+            results: list = []
             try:
                 m = (model_v or "omnivoice").strip().lower()
                 cfg = _cfg(m, device_v)
@@ -500,8 +514,12 @@ def build_demo() -> gr.Blocks:
                 # pipeline 递增秒数）；gradio 上传路径保留原始文件名
                 audio_base = (os.path.splitext(os.path.basename(ref_aud or ""))[0]
                               or "audio")
-                results: list = []
                 for i in range(draw_v):
+                    if i:
+                        buf.append(_term_line(
+                            "INFO", f"第 {i + 1}/{draw_v} 次抽卡 …"))
+                        # 重绘一次终端：上一轮结果已上屏，先报进度再开跑
+                        yield (*_clone_slots(results), _term_html(buf), buf)
                     result = synthesize(
                         cfg, logger,
                         text=text_v,
@@ -512,19 +530,20 @@ def build_demo() -> gr.Blocks:
                         out_name=audio_base,
                     )
                     results.append(result.out_path)
+                    buf.append(_term_line(
+                        "INFO", "第 %d/%d 个结果完成: %s（%.1f 秒）"
+                        % (i + 1, draw_v, os.path.basename(result.out_path),
+                           result.duration_sec)))
+                    yield (*_clone_slots(results), _term_html(buf), buf)
                 buf.append(_term_line(
                     "INFO", f"生成完成 共 {draw_v} 个结果（模型 {m}）。"))
-                slots = [
-                    gr.update(visible=True, value=results[i])
-                    if i < draw_v else gr.update(visible=False)
-                    for i in range(_MAX_DRAWS)
-                ]
-                return (*slots, _term_html(buf), buf)
+                yield (*_clone_slots(results), _term_html(buf), buf)
             except Exception as e:
                 logger.exception("生成失败")
                 buf.append(_term_line(
                     "ERROR", f"生成失败: {type(e).__name__}: {e}"))
-                return (*([gr.update()] * _MAX_DRAWS), _term_html(buf), buf)
+                # 已成功的结果保留，便于直接试听
+                yield (*_clone_slots(results), _term_html(buf), buf)
             finally:
                 # 生成完（无论成败）立即卸载引擎/模型进程内状态
                 _CTX_BUF.set(None)
