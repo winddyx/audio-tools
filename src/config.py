@@ -202,18 +202,17 @@ SRT_ITN = _env_bool("SRT_ITN", True)
 # 时间轴与排版（两条路径共用；行宽按 CJK=2 / 其余=1 计）
 # 中文一行 16 汉字（宽度 32）是国内字幕通行上限，故默认 32 而非 42/36。
 SRT_MAX_LINE_WIDTH = _env_int("SRT_MAX_LINE_WIDTH", 32)   # 每行宽度上限（≈16 汉字）
-SRT_MAX_LINES = _env_int("SRT_MAX_LINES", 1)              # 单条字幕最多行数
+# 单条字幕最多行数：断条以标点为界（从句整体成条、不从中间切开），一屏 2 行
+# （≈32 汉字）才能让多数整句落在同一条里；设 1 则长从句只能在中途硬切。
+SRT_MAX_LINES = _env_int("SRT_MAX_LINES", 2)              # 单条字幕最多行数
 SRT_MAX_BLOCK_SECONDS = _env("SRT_MAX_BLOCK_SECONDS", "6.0")  # 单条字幕最长秒数
 SRT_MAX_GAP_SECONDS = _env("SRT_MAX_GAP_SECONDS", "1.0")      # 句间断句间隔（秒）
 SRT_MIN_BLOCK_SECONDS = _env("SRT_MIN_BLOCK_SECONDS", "0.8")  # 单条字幕最短秒数
 # 成句标点后即可断句的最小宽度占单行宽度的比例：过短的半句不单独成条
 SRT_SENTENCE_BREAK_RATIO = _env("SRT_SENTENCE_BREAK_RATIO", "0.5")
-# 已超最长秒数、但句内没有标点可退时，向后顺延到最近标点的预算（秒）：
-# 避免把半句话切成 "表达。" 这类尾巴（0 = 不顺延，到点即断）
-SRT_BLOCK_EXTEND_SECONDS = _env("SRT_BLOCK_EXTEND_SECONDS", "1.5")
-# 碎条阈值（宽度，CJK=2）：切条时不给下一条留这么短的尾巴，渲染前再把
-# 仍过短的条目并入相邻条（优先上一条），避免 "间"、"轮" 这类一两字孤条。
-# 8 = 4 个汉字；0 = 关闭
+# 碎条阈值（宽度，CJK=2）：渲染前把过短的条目并入相邻条（上一条停在句末时
+# 优先并入下一条），避免极少见的一两字孤条（长停顿处不硬并）。8 = 4 个汉字；
+# 0 = 关闭
 SRT_MIN_CUE_WIDTH = _env_int("SRT_MIN_CUE_WIDTH", 8)
 # 字幕文本是否输出标点（断句仍按标点判断，只影响输出文本）：
 # False = 去掉标点，只留正文

@@ -13,12 +13,16 @@ SRT 字幕生成核心：音频 → 带时间轴的 SRT 字幕（引擎子进程
 
 两条路径都归到同一组 Cue（起止秒 + 文本），由本模块统一排版成 SRT：
 
-- 断条优先标点：句末标点（。！？）处成句即断；句内标点（，、；：）作为超限时的
-  回退断点，避免把词组从中间切开。标点不可用（未开启或对齐失败）时退回
-  停顿 / 单条最长秒数 / 每屏行数 三个约束——词级路径用词间时距，段级路径
-  按字符宽度比例拆分该段时长。
-- 断行按显示宽度（CJK=2、其余=1），折行点同样优先标点；中文之间不插空格，
-  拉丁词之间保留空格。
+- 断条只在标点处：以标点为界把文本切成"从句"（标点之间的整段），从句是断条
+  的原子单位，整体成条、不再从中间切开。标点不可用（未开启或对齐失败）时
+  退回 停顿 / 单条最长秒数 / 每屏容量 三个约束——词级路径用词间时距，段级
+  路径按字符宽度比例拆分该段时长。
+- 从句贪心累积到每屏容量（每行宽度 × 每屏行数）；句末标点处成句即断、句间
+  停顿超过阈值即断、累积超过单条最长秒数即断。只有单个从句本身就超过一屏
+  容量时，才在该从句内部按条目边界硬切（标点之间无处可退时的最后手段），
+  切出的后半段继续与后续从句一起累积。
+- 断行按显示宽度（CJK=2、其余=1），折行点同样优先标点（但以不撑宽行为前提）；
+  中文之间不插空格，拉丁词之间保留空格。
 
 推理（VAD / ASR / 对齐）全部在 audiocpp C++ 引擎侧完成，Python 只做分段落盘、
 结果汇总与文本排版（与 pipeline.py 的输出命名同性质，不做模型推理）。
@@ -47,7 +51,6 @@ from .config import (
     Config,
     MODELS_DIR,
     SRT_ASR,
-    SRT_BLOCK_EXTEND_SECONDS,
     SRT_ENUM_COMMA_AS_SPACE,
     SRT_HOTWORDS,
     SRT_HOTWORDS_FILE,
@@ -117,7 +120,6 @@ class SrtOptions:
     max_gap_seconds: float
     min_block_seconds: float
     sentence_break_ratio: float
-    block_extend_seconds: float
     min_cue_width: int         # 碎条阈值（宽度），低于此宽度尽量并入相邻条
     punctuation: bool          # 字幕文本是否输出标点
     enum_comma_space: bool     # 顿号（、）是否输出为空格
@@ -182,8 +184,6 @@ def _options(kwargs: dict) -> SrtOptions:
             _pick(kwargs, "min_block_seconds", SRT_MIN_BLOCK_SECONDS)),
         sentence_break_ratio=float(
             _pick(kwargs, "sentence_break_ratio", SRT_SENTENCE_BREAK_RATIO)),
-        block_extend_seconds=float(
-            _pick(kwargs, "block_extend_seconds", SRT_BLOCK_EXTEND_SECONDS)),
         min_cue_width=int(_pick(kwargs, "min_cue_width", SRT_MIN_CUE_WIDTH)),
         punctuation=_pick_bool(kwargs, "punctuation", SRT_PUNCTUATION),
         enum_comma_space=_pick_bool(kwargs, "enum_comma_space",
@@ -378,152 +378,167 @@ def _align_tokens(text: str, tokens: list[str]
     return out
 
 
-def _wrap(atoms: list[str], max_width: int) -> list[str]:
-    """按宽度贪心折行（不超 max_width），返回行列表。"""
-    lines: list[str] = []
-    line = ""
-    width = 0
-    for a in atoms:
-        aw = _text_width(a)
-        sep = 1 if (line and _needs_space(line, a)) else 0
-        if line and width + sep + aw > max_width:
-            lines.append(line)
-            line, width = a, aw
-            continue
-        line = f"{line} {a}" if sep else f"{line}{a}"
-        width += sep + aw
-    if line:
-        lines.append(line)
-    return lines
+def _prefix_widths(items: list) -> list[int]:
+    """各前缀的显示宽度（含原子间空格），返回长度 len(items)+1 的列表。
 
-
-def _preferred_cut(items: list) -> int:
-    """超限时的断点下标：优先最近的句末标点，其次最近的句内标点，否则到末尾。
-
-    items 元素取第 4/5 位作为 "该元素之前有句内/句末标点" 的布尔标记
-    （词级条目 = (词, 起, 止, 句内, 句末)，文本条目 = (原子, 0, 0, 句内, 句末)）。
-    返回值为下一段的起点：items[:cut] 归上一条，items[cut:] 归下一条。
+    空格规则与 _join_atoms 一致：仅当相邻原子首尾都不是 CJK 时插一个空格。
     """
-    for want_sentence in (True, False):
-        for j in range(len(items) - 1, 0, -1):
-            marked = items[j][4] if want_sentence else items[j][3]
-            if marked:
-                return j
-    return len(items)
-
-
-def _text_of(items: list) -> str:
-    """条目序列的文字（原子按需插空格）。"""
-    return _join_atoms([it[0] for it in items])
-
-
-def _is_sliver(items: list, opts: SrtOptions) -> bool:
-    """该段文字是否过短（碎条），不宜单独成为一条字幕。"""
-    if opts.min_cue_width <= 0 or not items:
-        return False
-    return _text_width(_text_of(items)) < opts.min_cue_width
+    widths = [0]
+    for j, it in enumerate(items):
+        add = _text_width(it[0])
+        if j and _needs_space(items[j - 1][0], it[0]):
+            add += 1
+        widths.append(widths[-1] + add)
+    return widths
 
 
 def _can_join(a: str, b: str, opts: SrtOptions) -> bool:
-    """两段文字合并后是否仍在每屏容量内（宽度近似判断）。"""
-    return (_text_width(_join_atoms([a, b]))
-            <= opts.max_width * opts.max_lines)
+    """两段文字合并后是否仍在每屏容量内（按装箱后的行数判断）。"""
+    text = _join_atoms([a, b])
+    return bool(text) and len(_layout(_text_items(text), opts)) <= opts.max_lines
 
 
-def _over_limit(items: list, opts: SrtOptions) -> bool:
-    """该条是否已超限：单条最长秒数，或折行后超过每屏行数。"""
-    if len(items) < 2:
-        return False
-    if (items[-1][2] - items[0][1]) > opts.max_block_seconds:
+# ── 断条：标点边界切从句，从句累积成条 ──────────────────────
+#
+# 条目统一为 (文本片段, 起秒, 止秒, 句内标点在前, 句末标点在前)：
+# 词级条目来自词条 + 转写片段对齐（_items_from_words），文本条目来自
+# _text_items（时间列留 0，段级路径另按宽度比例分配时长）。两条路径共用
+# 下面这套从句切分与累积逻辑，断点只落在标点上。
+
+def _items_from_words(words: list[tuple[str, float, float]],
+                      breaks: list[tuple[bool, bool, str]]) -> list[tuple]:
+    """词级条目：文本取转写片段（带标点），标志位 = 本词条之前有标点。"""
+    items: list[tuple] = []
+    for idx, (atom, start, end) in enumerate(words):
+        clause, sentence, piece = (breaks[idx] if idx < len(breaks)
+                                   else (False, False, ""))
+        items.append((piece or atom, start, end, clause, sentence))
+    return items
+
+
+def _units(items: list[tuple]) -> list[tuple[list[tuple], bool]]:
+    """按标点边界把条目流切成从句单元：[(条目列表, 是否以句末标点结尾)]。
+
+    从句单元是断条的原子单位：单元内部没有标点（标点都紧跟在它前面的那个
+    条目里），因此只能整体成条；单元之间可以断条。标点不可用（未开启或对齐
+    失败）时全部条目属同一个单元，退化为纯容量切分。
+    """
+    units: list[tuple[list[tuple], bool]] = []
+    cur: list[tuple] = []
+    sent = False
+    for it in items:
+        if cur and (it[3] or it[4]):          # 本条目之前有标点：从句边界
+            units.append((cur, sent))
+            cur, sent = [], False
+        cur.append(it)
+        if any(c in _SENTENCE_PUNCT for c in it[0]):
+            sent = True
+    if cur:
+        units.append((cur, sent))
+    return units
+
+
+def _append_width(cur: list, width: int, items: list) -> int:
+    """把 items 接到 cur 之后的行宽度（含必要的空格）。"""
+    if not items:
+        return width
+    add = _prefix_widths(items)[-1]
+    if cur and _needs_space(cur[-1][0], items[0][0]):
+        add += 1
+    return width + add
+
+
+def _layout(items: list, opts: SrtOptions) -> list[list[tuple]]:
+    """一条字幕的行装箱：从句整体成行（装不下就换行），超长从句在当前行内
+    按条目边界填满（硬切）。
+
+    装行与断条共用从句边界，因此折行点也落在标点上；某行剩余空间装不下
+    下一个从句时，该从句整体挪到下一行（不拆开）。只有从句自己就超过行宽
+    （标点之间无处可断）时才逐条目硬切。
+    """
+    max_width = opts.max_width
+    lines: list[list[tuple]] = []
+    cur: list[tuple] = []
+    width = 0
+    for unit_items, _sent in _units(items):
+        if _prefix_widths(unit_items)[-1] <= max_width:
+            need = _append_width(cur, width, unit_items)
+            if cur and need > max_width:
+                lines.append(cur)
+                cur, width = [], 0
+                need = _append_width(cur, width, unit_items)
+            cur, width = cur + unit_items, need
+            continue
+        for it in unit_items:                 # 超长从句：在当前行内逐条目填满
+            need = _append_width(cur, width, [it])
+            if cur and need > max_width:
+                lines.append(cur)
+                cur, width = [], 0
+                need = _append_width(cur, width, [it])
+            cur, width = cur + [it], need
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _fits(items: list, opts: SrtOptions) -> bool:
+    """该条装箱后是否在每屏行数内。"""
+    if not items:
         return True
-    return len(_wrap([it[0] for it in items], opts.max_width)) > opts.max_lines
+    return len(_layout(items, opts)) <= opts.max_lines
 
 
-def _extend_to_punct(words: list[tuple[str, float, float]],
-                     breaks: list, idx: int, buf: list,
-                     opts: SrtOptions) -> bool:
-    """超限但句内无标点可退时：若最近的标点边界就在预算内（时间 + 宽度），
-    再多收几个词，让字幕停在自然句读处，而不是切出 "表达。" 这类尾巴。
+def _parts(units: list, opts: SrtOptions) -> list[tuple[list[tuple], bool]]:
+    """从句单元 → 条目分组：单元超出一屏容量时在容量内按条目边界硬切。
 
-    边界有两种位置：下一个词之前有标点（flag[0]/flag[1]，本词归下一条），
-    或本词自己带尾随标点（flag[2]，本词仍归本条）——后者对应 "…表达。" 这种
-    半句结尾，正是要避免切掉的情形。
+    只有标点之间无处可断（单个从句自己就超过一屏）时才走这里：硬切点尽量
+    靠后（多装字），切出的后半段不带句末标记，继续与后续从句一起累积。
     """
-    if opts.block_extend_seconds <= 0:
-        return False
-    deadline = buf[-1][2] + opts.block_extend_seconds
-    width = _text_width(_join_atoms([b[0] for b in buf]))
-    for j in range(idx + 1, len(words)):
-        atom, start, end = words[j]
-        flag = breaks[j] if j < len(breaks) else (False, False, "")
-        piece = flag[2] or atom
-        tail_punct = any(_is_break_punct(c) for c in piece)
-        boundary = end if tail_punct else start
-        if boundary > deadline:
-            return False
-        width += _text_width(piece)
-        if width > opts.max_width * opts.max_lines:   # 会撑破每屏行数预算
-            return False
-        if flag[0] or flag[1] or tail_punct:          # 预算内遇到标点边界
-            return True
-    return False
+    out: list[tuple[list[tuple], bool]] = []
+    for items, sent in units:
+        cur: list[tuple] = []
+        for it in items:
+            if cur and not _fits(cur + [it], opts):
+                out.append((cur, False))
+                cur = []
+            cur.append(it)
+        if cur:
+            out.append((cur, sent))
+    return out
 
 
-def _flush(cues: list[Cue], items: list, cut: int) -> None:
-    """把 items[:cut] 收成一条字幕（时间取首尾元素）。"""
-    part = items[:cut]
-    if not part:
-        return
-    text = _join_atoms([p[0] for p in part])
-    if not text:
-        return
-    cues.append(Cue(start=part[0][1], end=part[-1][2], text=text))
+def _flush(cues: list[Cue], items: list) -> None:
+    """把 items 收成一条字幕（时间取首尾条目）。"""
+    text = _join_atoms([it[0] for it in items])
+    if text:
+        cues.append(Cue(start=items[0][1], end=items[-1][2], text=text))
 
 
-def _split_text(text: str, max_width: int, max_lines: int) -> list[str]:
-    """把文本切成若干块：每块折行后不超过 max_lines 行（供拆分时间轴用）。
+def _split_text(text: str, opts: SrtOptions) -> list[str]:
+    """把文本切成若干块：每块折行后不超过每屏行数（供拆分时间轴用）。
 
-    切点优先句内/句末标点，避免把词组从中间切开；以折行结果判定容量，
-    避免词较长时折行数超出上限、末行被裁掉。
+    块边界优先标点：标点之间的从句整体成块；从句自己就超出一屏容量时才在
+    该从句内部按条目边界硬切，避免把词组从中间切开。
     """
-    items = _text_items(text)
     blocks: list[str] = []
-    cur: list = []
-    for it in items:
-        cur.append(it)
-        if (len(cur) > 1
-                and len(_wrap([c[0] for c in cur], max_width)) > max_lines):
-            cut = _preferred_cut(cur)
-            if cut < 1 or cut >= len(cur):
-                cut = len(cur) - 1
-            blocks.append(_join_atoms([c[0] for c in cur[:cut]]))
-            cur = cur[cut:]
-    if cur:
-        blocks.append(_join_atoms([c[0] for c in cur]))
-    return [b for b in blocks if b]
+    for items, _sent in _parts(_units(_text_items(text)), opts):
+        block = _join_atoms([it[0] for it in items])
+        if block:
+            blocks.append(block)
+    return blocks
 
 
-def _render_lines(text: str, max_width: int, max_lines: int) -> list[str]:
-    """把一条字幕折成若干行；折行点优先标点。
+def _render_lines(text: str, opts: SrtOptions) -> list[str]:
+    """把一条字幕折成若干行：换行点落在从句（标点）边界上。
 
-    不做行数截断：上游（_split_text / _cues_from_words）已按每屏行数切好，
-    这里若仍多出行数（单个词条本身就超宽等），一并输出而不是裁掉末行——
-    裁掉末行等于丢字幕文本。max_lines 仅用于说明期望值。
+    折行与断条共用同一套装箱逻辑（_layout）：从句整体装进一行，装不下才
+    换行；单从句比一行还长时在该从句内部按条目边界硬切。不做行数截断：
+    上游（_split_text / _cues_from_words）已按每屏行数切好，这里若仍多出
+    行数（单个词条本身就超宽等），一并输出而不是裁掉末行——裁掉末行等于
+    丢字幕文本。
     """
-    items = _text_items(text)
-    lines: list[str] = []
-    cur: list = []
-    for it in items:
-        cur.append(it)
-        if len(cur) > 1 and len(_wrap([c[0] for c in cur], max_width)) > 1:
-            cut = _preferred_cut(cur)
-            if cut < 1 or cut >= len(cur):
-                cut = len(cur) - 1
-            lines.append(_join_atoms([c[0] for c in cur[:cut]]))
-            cur = cur[cut:]
-    if cur:
-        lines.append(_join_atoms([c[0] for c in cur]))
-    return [ln for ln in lines if ln]
+    return [_join_atoms([it[0] for it in line])
+            for line in _layout(_text_items(text), opts)]
 
 
 # ── 时间轴 → Cue ────────────────────────────────────────────
@@ -538,7 +553,7 @@ def _cues_from_segments(segments: list[tuple[float, float]],
         duration = max(end - start, 0.0)
         if not text or duration <= 0:
             continue
-        blocks = _split_text(text, opts.max_width, opts.max_lines)
+        blocks = _split_text(text, opts)
         if not blocks:
             continue
         weights = [max(_text_width(b), 1) for b in blocks]
@@ -553,55 +568,56 @@ def _cues_from_segments(segments: list[tuple[float, float]],
 
 
 def _cues_from_words(words: list[tuple[str, float, float]],
-                    breaks: list[tuple[bool, bool]],
+                    breaks: list[tuple[bool, bool, str]],
                     opts: SrtOptions) -> list[Cue]:
-    """词级时间轴：标点优先断句，其次按停顿/单条最长秒数/每屏行数断条。
+    """词级时间轴：从句（标点之间的整段）累积成条，断点只落在标点上。
 
     breaks[i] = (句内标点在前, 句末标点在前, 该词条的转写片段)，来自带标点转写
     文本与词条序列的对齐（见 _align_tokens）；标点不可用时标志全为 False、
-    片段为空串，退化为纯时距/长度断条。
+    片段为空串，全篇退化为一个从句，按容量与停顿切分。
+
+    收条条件（任一满足即收，下一条从当前从句开始）：
+    句间停顿超过 max_gap_seconds、上一条已停在句末标点且宽度达到
+    sentence_break_ratio、加入下一个从句会超出每屏容量、加入后超出单条最长
+    秒数。单个从句自己就超过每屏容量时（标点之间无处可断），在 _parts 里
+    按条目边界硬切。
     """
     cues: list[Cue] = []
     buf: list[tuple] = []
+    buf_sent = False
     min_sentence_width = max(int(opts.max_width * opts.sentence_break_ratio), 1)
-    for idx, (atom, start, end) in enumerate(words):
-        if idx < len(breaks):
-            clause, sentence, piece = breaks[idx]
-        else:
-            clause, sentence, piece = False, False, ""
+    for items, sent in _parts(_units(_items_from_words(words, breaks)), opts):
         if buf:
-            if (start - buf[-1][2]) > opts.max_gap_seconds:
-                _flush(cues, buf, len(buf))          # 自然停顿：直接断
+            width = _text_width(_join_atoms([b[0] for b in buf]))
+            gap = items[0][1] - buf[-1][2]
+            if (gap > opts.max_gap_seconds
+                    or (buf_sent and width >= min_sentence_width)
+                    or not _fits(buf + items, opts)
+                    or (items[-1][2] - buf[0][1]) > opts.max_block_seconds):
+                _flush(cues, buf)
                 buf = []
-            elif (sentence and _text_width(_join_atoms([b[0] for b in buf]))
-                    >= min_sentence_width):
-                _flush(cues, buf, len(buf))          # 句末标点：成句即断
-                buf = []
-        buf.append((piece or atom, start, end, clause, sentence))
-        if _over_limit(buf, opts):
-            cut = _preferred_cut(buf)
-            if cut == len(buf) and _extend_to_punct(words, breaks, idx, buf,
-                                                    opts):
-                continue          # 句内无标点：顺延到最近标点处再断
-            # 回退点要同时满足两点，否则继续往前退：
-            # 1) 上一条不超行数/秒数预算；2) 不给下一条留一两字的碎尾
-            while cut > 1 and (_over_limit(buf[:cut], opts)
-                               or _is_sliver(buf[cut:], opts)):
-                inner = _preferred_cut(buf[:cut])
-                cut = inner if inner < cut else cut - 1
-            _flush(cues, buf, cut)
-            buf = buf[cut:]
-    _flush(cues, buf, len(buf))
+        buf.extend(items)
+        buf_sent = sent
+    _flush(cues, buf)
     return cues
+
+
+def _ends_sentence(text: str) -> bool:
+    """该条文字是否停在句末标点上。"""
+    stripped = text.rstrip()
+    return bool(stripped) and stripped[-1] in _SENTENCE_PUNCT
 
 
 def _merge_short_cues(cues: list[Cue], opts: SrtOptions) -> list[Cue]:
     """把过短的碎条尽量并入相邻条目（优先并入上一条，放不下再并入下一条）。
 
-    词级切条时已经尽量不留碎尾，但自然停顿/超时断条仍可能切出 "间"、"轮"
-    这类一两字的孤条；这里统一收口：合并后仍要满足每屏容量（宽度），且两条
-    之间的停顿不超过 max_gap_seconds（长停顿处的断条不硬并）。并入后时间取
-    两者的并集，交给 _fix_times 收尾。
+    断条已按从句（标点之间的整段）成条，碎条只会因句间长停顿或每屏容量这
+    两个原因偶尔出现；这里统一收口：合并后仍要满足每屏容量（按装箱行数），
+    且两条之间的停顿不超过 max_gap_seconds（长停顿处的断条不硬并）。并入后
+    时间取两者的并集，交给 _fix_times 收尾。
+
+    上一条已停在句末标点时改优先并入下一条：把 "后来，" 这类引出下句的短条
+    挂到它引出的那句上，比接在上一句末尾更自然。
     """
     if opts.min_cue_width <= 0:
         return cues
@@ -614,22 +630,35 @@ def _merge_short_cues(cues: list[Cue], opts: SrtOptions) -> list[Cue]:
             continue
         prev = work[i - 1] if i > 0 else None
         nxt = work[i + 1] if i + 1 < len(work) else None
-        if (prev is not None
-                and (cue.start - prev.end) <= opts.max_gap_seconds
-                and _can_join(prev.text, cue.text, opts)):
-            prev.text = _join_atoms([prev.text, cue.text])
-            prev.start = min(prev.start, cue.start)
-            prev.end = max(prev.end, cue.end)
+        order = ("nxt", "prev")
+        if prev is None or not _ends_sentence(prev.text):
+            order = ("prev", "nxt")
+        merged = False
+        for side in order:
+            other = prev if side == "prev" else nxt
+            if other is None:
+                continue
+            if side == "prev":
+                if (cue.start - other.end) > opts.max_gap_seconds:
+                    continue
+                if not _can_join(other.text, cue.text, opts):
+                    continue
+                other.text = _join_atoms([other.text, cue.text])
+                other.start = min(other.start, cue.start)
+                other.end = max(other.end, cue.end)
+            else:
+                if (other.start - cue.end) > opts.max_gap_seconds:
+                    continue
+                if not _can_join(cue.text, other.text, opts):
+                    continue
+                other.text = _join_atoms([cue.text, other.text])
+                other.start = min(other.start, cue.start)
+                other.end = max(other.end, cue.end)
             work.pop(i)
+            merged = True
+            break
+        if merged:
             i = max(i - 1, 0)       # 合并后前一条可能仍偏短，回头再看
-            continue
-        if (nxt is not None
-                and (nxt.start - cue.end) <= opts.max_gap_seconds
-                and _can_join(cue.text, nxt.text, opts)):
-            nxt.text = _join_atoms([cue.text, nxt.text])
-            nxt.start = min(nxt.start, cue.start)
-            nxt.end = max(nxt.end, cue.end)
-            work.pop(i)
             continue
         i += 1
     return work
@@ -702,8 +731,7 @@ def _render_srt(cues: list[Cue], opts: SrtOptions) -> str:
     index = 0
     for cue in cues:
         lines = [_output_text(ln, opts)
-                 for ln in _render_lines(cue.text, opts.max_width,
-                                         opts.max_lines)]
+                 for ln in _render_lines(cue.text, opts)]
         lines = [ln for ln in lines if ln]
         if not lines:
             continue
@@ -921,7 +949,7 @@ def subtitles(cfg: Config, logger: logging.Logger, **kwargs) -> SrtResult:
       enum_comma_space（顿号转空格；留空用 SRT_ENUM_COMMA_AS_SPACE）、
       min_cue_width（碎条阈值宽度；留空用 SRT_MIN_CUE_WIDTH，0 = 关闭）、
       max_line_width / max_lines / max_block_seconds / max_gap_seconds /
-      min_block_seconds / sentence_break_ratio / block_extend_seconds
+      min_block_seconds / sentence_break_ratio
       （排版与时间轴；留空用 config.py 顶部常量）。
 
     引擎调用与排版分离：本函数只负责分段、汇总与写盘，推理在引擎子进程内。

@@ -58,8 +58,11 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   与 `sensevoice`（silero VAD `--task vad` 分段 → 逐段切 wav →
   `--batch-audio-dir` 一次批量转写 → 段级时间轴）；VAD 用引擎自带
   `assets/framework/models/silero_vad`（绝对路径，随 vendor 一同 clone）。
-  SRT 由本模块排版：断条/断行优先标点（句末成句即断、句内标点作回退点），
-  超最长秒数且句内无标点时按 `SRT_BLOCK_EXTEND_SECONDS` 顺延到最近标点；
+  SRT 由本模块排版：断条与折行共用同一套"从句"逻辑——以标点为界把文本
+  切成从句（标点之间的整段），从句是断条与换行的原子单位，整体成条、不从
+  中间切开；从句贪心累积到每屏容量（每行宽度 × 每屏行数），句末标点成句
+  即断、句间停顿超 `SRT_MAX_GAP_SECONDS` 即断、超 `SRT_MAX_BLOCK_SECONDS`
+  即断；只有单个从句自己就超过一屏时，才在该从句内部按条目边界硬切。
   行宽按 CJK=2 计、中文不插空格。推理全在引擎侧。
   热词/上下文（`SRT_HOTWORDS` 或 kwargs `hotwords`，**仅 qwen3_asr 生效**）
   经引擎 `--text` 作为 Qwen3-ASR 的系统提示词注入（引擎侧把它当

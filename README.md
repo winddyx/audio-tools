@@ -128,11 +128,10 @@ uv run python web.py
 | `SRT_QWEN3_PUNCTUATION` | `true` | Qwen3-ASR 保留标点（`preserve_punctuation`）：带标点转写用于按标点断句与输出 |
 | `SRT_PUNCTUATION` | `false` | 字幕文本是否输出标点（关掉只留正文；断句仍按标点判断） |
 | `SRT_ENUM_COMMA_AS_SPACE` | `true` | 顿号（、）输出为空格：`赣州、贵阳` → `赣州 贵阳` |
-| `SRT_MAX_LINE_WIDTH` / `SRT_MAX_LINES` | `32` / `1` | 字幕每行宽度（CJK 按 2 计，32 ≈ 16 汉字）/ 每屏最大行数 |
-| `SRT_MAX_BLOCK_SECONDS` / `SRT_MAX_GAP_SECONDS` / `SRT_MIN_BLOCK_SECONDS` | `6.0` / `1.0` / `0.8` | 单条字幕最长秒数 / 句间断句间隔 / 单条最短秒数 |
-| `SRT_MIN_CUE_WIDTH` | `8` | 碎条阈值（宽度，8 = 4 汉字）：切条不留这么短的尾巴，过短的条目并入相邻条（0 = 关闭） |
+| `SRT_MAX_LINE_WIDTH` / `SRT_MAX_LINES` | `32` / `2` | 字幕每行宽度（CJK 按 2 计，32 ≈ 16 汉字）/ 每屏最大行数（断条以标点为界，一屏 2 行才能让多数整句落在同一条里） |
+| `SRT_MAX_BLOCK_SECONDS` / `SRT_MAX_GAP_SECONDS` / `SRT_MIN_BLOCK_SECONDS` | `6.0` / `1.0` / `0.8` | 单条字幕最长秒数（超过则在下一个从句边界断条）/ 句间断句间隔 / 单条最短秒数 |
+| `SRT_MIN_CUE_WIDTH` | `8` | 碎条阈值（宽度，8 = 4 汉字）：低于此宽度的条目并入相邻条（上一条停在句末时优先并入下一条；0 = 关闭） |
 | `SRT_SENTENCE_BREAK_RATIO` | `0.5` | 句末标点处成句即断所需的最小宽度占比（占单行宽度） |
-| `SRT_BLOCK_EXTEND_SECONDS` | `1.5` | 超最长秒数但句内无标点可退时，向后顺延到最近标点的预算（秒） |
 | `SRT_QWEN3_ASR_FILE` | `Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf` | Qwen3-ASR 权重（HF 仓库 `audio-cpp/audio.cpp-gguf`；`SRT_QWEN3_ASR_LOCAL` 可指本地文件） |
 | `SRT_QWEN3_ALIGNER_FILE` | `Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf` | Qwen3-ForcedAligner 权重（词级时间戳；`SRT_QWEN3_ALIGNER_LOCAL` 可指本地文件） |
 | `WEB_IP` / `WEB_PORT` | `0.0.0.0` / `38001` | Web 监听 |

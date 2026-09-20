@@ -391,6 +391,7 @@ def build_demo() -> gr.Blocks:
                             label="每屏行数 Max Lines",
                             minimum=1, maximum=3, step=1, scale=1,
                             value=SRT_MAX_LINES,
+                            info="设为 1 时超过 16 汉字的从句只能从中间硬切。",
                         )
                         srt_min_cue = gr.Slider(
                             label="单条最小宽度 Min Cue Width",
@@ -403,7 +404,7 @@ def build_demo() -> gr.Blocks:
                             label="单条最长秒数 Max Block (s)",
                             minimum=1.0, maximum=12.0, step=0.5, scale=1,
                             value=float(SRT_MAX_BLOCK_SECONDS),
-                            info="超时后优先顺延到最近的标点处断条。",
+                            info="超过则在下一个从句边界断条（断点仍在标点处）。",
                         )
                         srt_max_gap = gr.Slider(
                             label="句间断句间隙 Max Gap (s)",
@@ -418,8 +419,11 @@ def build_demo() -> gr.Blocks:
                             info="不足则向后延长显示。",
                         )
                     gr.Markdown(
-                        "断条优先标点（句末成句即断、句内标点作为回退点），"
-                        "避免把词组从中间切开；本区设置只在当前进程内生效，"
+                        "断条与折行都落在标点上：以标点为界把文本切成从句"
+                        "（标点之间的整段），从句整体成条、不从中间切开，"
+                        "累积到每屏容量（每行宽度 × 每屏行数）为止；只有单个"
+                        "从句自己就超过一屏时才在该从句内部硬切。"
+                        "本区设置只在当前进程内生效，"
                         "持久化修改请编辑 **src/config.py** 顶部变量或设置同名"
                         "环境变量。"
                     )
