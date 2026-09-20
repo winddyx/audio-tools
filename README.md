@@ -41,7 +41,9 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
 
 ```
 ├── vc.py                  # CLI 入口（语音克隆 / --transcribe）
-├── web.py                 # Gradio 入口（双 Tab：语音克隆 / 粤语翻译）
+├── web.py                 # Gradio 入口（三 Tab：语音克隆 / 粤语翻译 / SRT 字幕）
+├── tools/
+│   └── srt_eval.py        # SRT 断句评测（孤行/行宽/语速/断点 F1，离线只读）
 └── src/
     ├── config.py          # 全局设置（唯一设置源：顶部变量 + env 覆盖）
     ├── audiocpp.py        # 推理引擎运行器（audio.cpp，模型无关，按需构建/释放）
@@ -55,6 +57,8 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
     ├── sensevoice.py      # SenseVoice-Small ASR 核心（参考音频转写）
     ├── subtitle.py        # SRT 字幕核心（VAD+SenseVoice 段级 / Qwen3-ASR 词级）
     ├── hf.py              # HuggingFace 下载（本地优先 + hf-mirror 兜底 + .gguf 别名）
+    ├── llamarun.py        # llama.cpp 单次补全运行器（hymt2 / segment_llm 共用）
+    ├── segment_llm.py     # 小 LLM 辅助断句（补停顿分隔 / 断条分组，默认关闭）
     └── pipeline.py        # 统一编排 synthesize()/draw()/release()
 ```
 
@@ -72,6 +76,16 @@ uv run python vc.py --transcribe <ref_audio.wav>
 # Web：http://localhost:38001（页面底部「模型与运行设置」选模型/设备/语言）
 uv run python web.py
 ```
+
+## 字幕断条（SRT）
+
+断条与折行共用同一套"从句"逻辑，任何断法都不切词组：
+
+- **从句**：以标点为界把文本切成从句（标点之间的整段），从句是断条与折行的原子单位，整体成条/成行；只有从句自己就宽过一行（标点之间无处可断）时才在该从句内部拆。
+- **断条**：全篇取代价最小的断法（动态规划）而不是逐条贪心。每条字幕按"过短、语速过快"计罚，每个断点按标点级别计代价——句末标点与逗号倾向在此断、顿号/分号/冒号不倾向、从句内硬拆代价最大、明显停顿小幅倾向；停顿超过 `SRT_MAX_GAP_SECONDS` 的位置必须断，每屏容量与 `SRT_MAX_BLOCK_SECONDS` 是硬约束。
+- **折行**：行数取最少行数，理想行宽 = 总宽 / 行数，再按"偏离理想行宽² + 孤行罚 + 行首虚词/行尾开引号禁则"取最优，因此长从句被拆成两行大致等宽，而不是填满首行、末行只剩一两个字。
+- **可选小 LLM 辅助**（`SRT_LLM`，默认关闭）：`punct` 给无标点转写补标点（SenseVoice 关 ITN 时有用），`breaks` 让模型判断每条字幕该含哪几个从句。模型**不产生时间轴**（时间永远来自 ForcedAligner / VAD），输出严格校验（补标点要"去标点后逐字一致"、分组要"每组 ≥ 1 且总和不变"），不通过就退回规则结果，结果按内容哈希缓存。0.6B 模型补标点偏稀，正式用建议 `SRT_LLM_REPO=Qwen/Qwen3-1.7B-GGUF`、`SRT_LLM_FILE=Qwen3-1.7B-Q8_0.gguf`。
+- **评测**：`uv run python tools/srt_eval.py 字幕.srt [人工校对.srt]` 输出条数/行数/孤行/行首虚词/超宽行/语速，给了校对版再算断点 F1 与"需要改动的条数"。
 
 ## Web 界面（三 Tab）
 
@@ -131,8 +145,12 @@ uv run python web.py
 | `SRT_MAX_LINE_WIDTH` / `SRT_MAX_LINES` | `32` / `2` | 字幕每行宽度（CJK 按 2 计，32 ≈ 16 汉字）/ 每屏最大行数（断条以标点为界，一屏 2 行才能让多数整句落在同一条里） |
 | `SRT_MAX_BLOCK_SECONDS` / `SRT_MAX_GAP_SECONDS` / `SRT_MIN_BLOCK_SECONDS` | `6.0` / `1.0` / `0.8` | 单条字幕最长秒数（超过则在下一个从句边界断条）/ 句间断句间隔 / 单条最短秒数 |
 | `SRT_MIN_CUE_WIDTH` | `8` | 碎条阈值（宽度，8 = 4 汉字）：低于此宽度的条目并入相邻条（上一条停在句末时优先并入下一条；0 = 关闭） |
-| `SRT_SENTENCE_BREAK_RATIO` | `0.5` | 句末标点处成句即断所需的最小宽度占比（占单行宽度；设 0 = 一律收条） |
+| `SRT_CPS_MAX` | `17` | 单条字幕语速上限（CJK 字数/秒）：按超出比例计罚，倾向另起一条或延长显示（0 = 不检查） |
 | `SRT_BREAK_ON_COMMA` | `true` | 逗号（，）处即收条：一条字幕停在逗号上（顿号、分号、冒号不受影响，仍只作从句边界，容量不够时才在这里断） |
+| `SRT_MIN_LINE_WIDTH` / `SRT_LINE_BALANCE` | `8` / `1.0` | 折行：孤行阈值（宽度低于它算孤行）/ 均衡权重（从句宽过一行时拆行取"偏离理想行宽² + 孤行罚 + 行首行尾禁则"最优；0 = 行内尽量填满） |
+| `SRT_LLM` / `SRT_LLM_MODE` | `false` / `both` | 小 LLM 辅助断句总开关与形态（`punct` 补标点 / `breaks` 判断每条含哪几个从句 / `both` / `off`） |
+| `SRT_LLM_REPO` / `SRT_LLM_FILE` | `Qwen/Qwen3-0.6B-GGUF` / `Qwen3-0.6B-Q8_0.gguf` | 断句辅助模型（`SRT_LLM_LOCAL` 可指本地 .gguf；补标点建议换 1.7B 级模型） |
+| `SRT_LLM_TEMPERATURE` / `SRT_LLM_SEED` / `SRT_LLM_BATCH_CLAUSES` / `SRT_LLM_PUNCT_CHARS` / `SRT_LLM_CACHE` | `0.0` / `1234` / `24` / `60` / `true` | 采样固定可复现 / 固定种子 / 每次请求的从句数 / 补标点分块字数 / 按内容哈希缓存结果 |
 | `SRT_QWEN3_ASR_FILE` | `Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf` | Qwen3-ASR 权重（HF 仓库 `audio-cpp/audio.cpp-gguf`；`SRT_QWEN3_ASR_LOCAL` 可指本地文件） |
 | `SRT_QWEN3_ALIGNER_FILE` | `Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf` | Qwen3-ForcedAligner 权重（词级时间戳；`SRT_QWEN3_ALIGNER_LOCAL` 可指本地文件） |
 | `WEB_IP` / `WEB_PORT` | `0.0.0.0` / `38001` | Web 监听 |

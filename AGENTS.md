@@ -22,6 +22,7 @@ uv run python vc.py <ref.wav> <text.txt>          # 语音克隆（自动 ASR）
 uv run python vc.py --transcribe <ref.wav>        # 只转写参考音频（校对用）
 uv run python web.py                              # Web：http://localhost:38001
 uv run python -m compileall -q src vc.py web.py   # 语法检查
+uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/行宽/语速/断点 F1）
 ```
 无测试套件；验证方式 = compileall + import 冒烟 + 用真实素材端到端跑 vc.py。
 注意：引擎与模型均 gitignore，删除 `vendor/ models/ .venv/` 后首跑会重新 clone+编译+下载
@@ -60,17 +61,29 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   `assets/framework/models/silero_vad`（绝对路径，随 vendor 一同 clone）。
   SRT 由本模块排版：断条与折行共用同一套"从句"逻辑——以标点为界把文本
   切成从句（标点之间的整段），从句是断条与换行的原子单位，整体成条、不从
-  中间切开；从句贪心累积到每屏容量（每行宽度 × 每屏行数），句末标点成句
-  即断（`SRT_BREAK_ON_COMMA=true` 时逗号也无条件收条，顿号/分号/冒号只作
-  从句边界）、句间停顿超 `SRT_MAX_GAP_SECONDS` 即断、超
-  `SRT_MAX_BLOCK_SECONDS` 即断；只有单个从句自己就超过一屏时，才在该从句
-  内部按条目边界硬切。
+  中间切开；断条用整篇代价最优的动态规划（`_dp_cues`：每条按过短
+  `SRT_MIN_CUE_WIDTH` 与语速 `SRT_CPS_MAX` 计罚，断点按标点级别计代价，
+  句末/逗号倾向断、顿号等不倾向、从句内硬拆最贵、明显停顿小幅倾向；停顿超
+  `SRT_MAX_GAP_SECONDS` 必断，每屏容量与 `SRT_MAX_BLOCK_SECONDS` 是硬约束）。
+  折行按"最少行数 + 偏离理想行宽² + 孤行罚 + 行首虚词/行尾开引号禁则"取最优
+  （`SRT_MIN_LINE_WIDTH` / `SRT_LINE_BALANCE`），长从句拆成两行大致等宽而不是
+  末行只剩一两个字；`SRT_BREAK_ON_COMMA` 控制逗号是否直接收条。
   行宽按 CJK=2 计、中文不插空格。推理全在引擎侧。
+  可选小 LLM 辅助（`SRT_LLM`，默认关）：`segment_llm.py` 给无标点转写补标点
+  （punct）或判断每条字幕含哪几个从句（breaks），经 `--jinja` 走模型 chat 模板；
+  模型不产生时间轴，输出严格校验（补标点逐字一致、分组总和不变），不过即退回
+  规则结果，结果按内容哈希缓存。
   热词/上下文（`SRT_HOTWORDS` 或 kwargs `hotwords`，**仅 qwen3_asr 生效**）
   经引擎 `--text` 作为 Qwen3-ASR 的系统提示词注入（引擎侧把它当
   `request.context` 拼进 chat 模板），按 `SRT_HOTWORDS_PROMPT` 模板拼接
   （留空 = 原样用热词文本）；SenseVoice 无上下文接口，忽略并告警。取值顺序
   kwargs → `cfg.srt_hotwords` → `SRT_HOTWORDS` → 根目录 `hotword.txt`。
+- `llamarun.py` — llama.cpp 单次补全的共用运行器（引擎定位/自动 clone+编译
+  `llama-completion`、模型定位、`run_once`）；`LLAMA_CLI` 留空即自动构建
+  `vendor/llama.cpp`，模型只在 HF 默认缓存。
+- `segment_llm.py` — 小 LLM 辅助断句（B1 补标点 / B2 断条分组）：提示词、
+  严格校验、内容哈希缓存、分批请求；由 `subtitle.subtitles(llm_mode=...)`
+  接入，默认关闭（`SRT_LLM`）。
 - `hf.py` — HF 下载：本地优先 + hf-mirror 兜底（`HF_NO_MIRROR_FALLBACK=1` 关闭）。
 - `hymt2.py` — LLM 文案翻译（普通话→粤语，TTS 输入前处理）：Hy-MT2-1.8B
   （腾讯开源，官方支持粤语 yue）+ `llama-completion`（llama.cpp 子进程；
@@ -131,11 +144,12 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   ForcedAligner 词级时间轴 + 带标点转写，按标点断句；sensevoice：VAD 分段 +
   SenseVoice 段级时间轴、无下载）+ 设备/语种 + VAD（合并间隙、最短语音段、ITN）
   + 输出开关（`SRT_PUNCTUATION` 是否输出标点、`SRT_ENUM_COMMA_AS_SPACE`
-  顿号转空格）与排版（每行宽度、每屏行数、单条最小宽度、单条最长秒数、句间
-  间隙、最短显示秒数）参数，走 `src/subtitle.subtitles()`：词级路径的字幕文本
-  取自带标点转写的逐词片段（`_align_tokens`，对齐器漏词也不丢字），断条优先标点、
-  超时顺延到最近标点，切条不留碎尾（`SRT_MIN_CUE_WIDTH`）并随后把仍过短的条目
-  并入相邻条，渲染不裁行（宁可多一行也不丢文本）。
+  顿号转空格、`SRT_BREAK_ON_COMMA` 逗号断条）与排版（每行宽度、每屏行数、
+  单行最小宽度、单条最小宽度、单条最长秒数、句间间隙、最短显示秒数）参数，
+  以及「断句辅助」（off/punct/breaks/both：小 LLM 补标点或判断分组），
+  走 `src/subtitle.subtitles()`：词级路径的字幕文本取自带标点转写的逐词片段
+  （`_align_tokens`，对齐器漏词也不丢字），断条取代价最优、碎条并入相邻条
+  （`SRT_MIN_CUE_WIDTH`），渲染不裁行（宁可多一行也不丢文本）。
 - 终端日志在标题下方、Tab 栏上方（页面级共享终端）：三个 Tab 的事件处理器
   共用同一个会话缓冲（gradio 会话隔离，刷新即清空）。
 - `_run_quiet`/`run_cli` 失败抛 `RuntimeError` 带 stderr 尾部诊断（≈60 行），不在入口裸奔。

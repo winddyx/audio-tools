@@ -7,8 +7,8 @@ llama-completion（llama.cpp 单次补全 CLI）子进程做推理，Python 只�
 
 - 引擎：新版 llama.cpp（ggml >= 0.10）把单次补全拆到 llama-completion。
   LLAMA_CLI 留空时自动 clone + cmake 编译 vendor/llama.cpp（与 audiocpp
-  同模式，不依赖本机 brew 安装），产物
-  vendor/llama.cpp/build/bin/llama-completion（vendor 已 gitignore）；
+  同模式，不依赖本机 brew 安装）；引擎定位/构建、模型定位与子进程调用
+  统一在 src/llamarun.py（与 src/segment_llm.py 共用）；
 - 模型经 HuggingFace 下载，只留在 HF 默认缓存并生成 .gguf 硬链接别名
   （src/hf._ensure_gguf_file），不落工程目录；HYMT2_LOCAL 可手工放置；
 - 提示词模板：默认读取 HYMT2_PROMPT_FILE 指向的纯文本（含 {text} 占位，
@@ -24,9 +24,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
-import subprocess
-import time
 
 from .config import (
     HYMT2_CHUNK_CHARS,
@@ -42,14 +39,8 @@ from .config import (
     HYMT2_TOP_K,
     HYMT2_TOP_P,
     HYMT2_TRAD,
-    LLAMA_BUILD_ARGS,
-    LLAMA_CLI,
-    LLAMA_DEBUG,
-    LLAMA_REF,
-    LLAMA_REPO,
-    VENDOR_DIR,
 )
-from .hf import _ensure_gguf_file
+from .llamarun import LlmParams, model_path, run_once
 
 # 粤语功能字标志集：译文若完全不含这些字，基本可判定模型没执行粤语转换
 # （回显原文/繁体书面化），translate() 会自动重跑一次。
@@ -76,138 +67,29 @@ def _to_hk_trad(text: str) -> str:
         return text
 
 
-_LLAMA_BIN_NAME = "llama-completion"
-
-
-def _binary(logger: logging.Logger) -> str:
-    """定位 llama-completion：LLAMA_CLI 显式设置优先，否则自动构建 vendor。
-
-    - LLAMA_CLI 非空：当作可执行名（PATH 查找）或绝对路径，找不到即报错；
-    - LLAMA_CLI 留空（默认）：复用 vendor/llama.cpp/build/bin 下已有产物，
-      缺失则自动 clone + cmake 编译（同 audiocpp 引擎模式，不依赖本机安装）。
-    """
-    if LLAMA_CLI:
-        if os.path.sep in LLAMA_CLI and os.path.isfile(LLAMA_CLI):
-            return LLAMA_CLI
-        found = shutil.which(LLAMA_CLI)
-        if found:
-            return found
-        raise RuntimeError(f"LLAMA_CLI 指向的可执行未找到: {LLAMA_CLI}")
-    built = os.path.join(VENDOR_DIR, "llama.cpp", "build", "bin", _LLAMA_BIN_NAME)
-    if os.path.isfile(built):
-        return built
-    return _ensure_built(logger)
-
-
-def _run_step(cmd: list[str], logger: logging.Logger, desc: str) -> None:
-    """执行 clone/编译等一次性步骤；失败抛 RuntimeError（带输出尾部）。"""
-    t0 = time.time()
-    try:
-        if LLAMA_DEBUG:
-            r = subprocess.run(cmd)          # 透传原始输出（调试用）
-        else:
-            r = subprocess.run(cmd, capture_output=True, text=True)
-    except FileNotFoundError as e:
-        raise RuntimeError(
-            f"{desc}失败：缺少命令 {e.filename}（请检查 git/cmake 是否安装）")
-    if r.returncode != 0:
-        tail = "" if LLAMA_DEBUG else (r.stderr or r.stdout or "").strip()[-800:]
-        raise RuntimeError(f"{desc}失败（rc={r.returncode}）: {tail}")
-    logger.info("%s完成（%.0fs）", desc, time.time() - t0)
-
-
-def _ensure_built(logger: logging.Logger) -> str:
-    """自动 clone + 编译 llama.cpp，返回 llama-completion 绝对路径。"""
-    src = os.path.join(VENDOR_DIR, "llama.cpp")
-    build = os.path.join(src, "build")
-    binary = os.path.join(build, "bin", _LLAMA_BIN_NAME)
-    if shutil.which("cmake") is None:
-        raise RuntimeError("未找到 cmake，请先安装（brew install cmake）后重试。")
-    if not os.path.isfile(os.path.join(src, "CMakeLists.txt")):
-        logger.info("未找到 llama.cpp 源码，clone %s（分支 %s）…",
-                    LLAMA_REPO, LLAMA_REF)
-        os.makedirs(VENDOR_DIR, exist_ok=True)
-        _run_step([
-            "git", "clone", "--depth", "1", "--branch", LLAMA_REF,
-            "--single-branch", "--recurse-submodules",
-            LLAMA_REPO, src,
-        ], logger, "git clone llama.cpp")
-    logger.info("cmake 配置 vendor/llama.cpp（首次较久）…")
-    cfg = ["cmake", "-S", src, "-B", build, "-DCMAKE_BUILD_TYPE=Release"]
-    cfg += (LLAMA_BUILD_ARGS or "").split()
-    _run_step(cfg, logger, "cmake 配置")
-    logger.info("cmake 编译 %s（多核，请耐心等待）…", _LLAMA_BIN_NAME)
-    _run_step([
-        "cmake", "--build", build, "--config", "Release",
-        "--target", _LLAMA_BIN_NAME, "--parallel",
-    ], logger, "cmake 编译")
-    if not os.path.isfile(binary):
-        raise RuntimeError(f"编译完成但未找到产物: {binary}")
-    logger.info("%s 就绪: %s", _LLAMA_BIN_NAME, binary)
-    return binary
-
-
 def _ensure_model(logger: logging.Logger) -> str:
-    """返回可直接喂给 llama-cli 的模型 .gguf 路径（本地手工放置优先）。"""
-    if HYMT2_LOCAL:
-        path = os.path.abspath(HYMT2_LOCAL)
-        if not os.path.isfile(path):
-            raise RuntimeError(f"HYMT2_LOCAL 指向的文件不存在: {path}")
-        return path
-    logger.info("翻译模型: %s/%s（Hy-MT2-1.8B，llama.cpp）",
-                HYMT2_REPO, HYMT2_FILE)
-    return _ensure_gguf_file(HYMT2_REPO, HYMT2_FILE, logger)
+    """返回可直接喂给 llama-completion 的模型 .gguf 路径（本地优先）。"""
+    return model_path(HYMT2_REPO, HYMT2_FILE, HYMT2_LOCAL, logger,
+                      desc="翻译")
 
 
 def _run_once(model: str, prompt: str, logger: logging.Logger) -> str:
-    """调用 llama-cli 完成一次翻译，返回模型输出文本。
+    """调用 llama-completion 完成一次翻译，返回模型输出文本。
 
-    采样参数用 config 顶部常量（默认腾讯官方推荐）；失败抛 RuntimeError
-    （含 stderr 尾部）。HYMT2_DEVICE=cpu 时加 --device none 强制 CPU。
+    采样/设备参数用 config 顶部常量（默认腾讯官方推荐）；引擎定位与自动
+    构建、模型定位、子进程调用都在 src/llamarun.py；失败抛 RuntimeError
+    （含 stderr 尾部）。
     """
-    cmd = [
-        _binary(logger),
-        "-m", model,
-        "-p", prompt,
-        "-n", str(HYMT2_MAX_TOKENS),
-        "--temp", HYMT2_TEMPERATURE,
-        "--top-p", HYMT2_TOP_P,
-        "--top-k", str(HYMT2_TOP_K),
-        "--repeat-penalty", HYMT2_REPETITION_PENALTY,
-        "--no-display-prompt",
-        "--jinja",
-        "-st",
-    ]
-    if HYMT2_DEVICE == "cpu":
-        cmd += ["--device", "none"]
-    elif HYMT2_DEVICE:
-        cmd += ["--device", HYMT2_DEVICE]
-    t0 = time.time()
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=HYMT2_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"llama-cli 翻译超时（>{HYMT2_TIMEOUT}s）；可调大 "
-            "HYMT2_TIMEOUT 或改小 HYMT2_MAX_TOKENS / HYMT2_CHUNK_CHARS。"
-        )
-    dt = time.time() - t0
-    if r.returncode != 0:
-        tail = (r.stderr or r.stdout or "").strip()[-600:]
-        raise RuntimeError(
-            f"llama-completion 翻译失败（rc={r.returncode}，{dt:.0f}s）: {tail}")
-    logger.info("llama-completion 完成: %.1fs（输出 %d 字符）", dt, len(r.stdout or ""))
-    out = (r.stdout or "").strip()
-    # llama-completion 会把结束标记（[end of text] 等）也打到 stdout，清掉
-    for marker in ("[end of text]", "[end of turn]", "[EOT]"):
-        while out.endswith(marker):
-            out = out[:-len(marker)].rstrip()
-    return out
+    return run_once(model, prompt, logger, LlmParams(
+        max_tokens=HYMT2_MAX_TOKENS,
+        temperature=HYMT2_TEMPERATURE,
+        top_p=HYMT2_TOP_P,
+        top_k=HYMT2_TOP_K,
+        repeat_penalty=HYMT2_REPETITION_PENALTY,
+        timeout=HYMT2_TIMEOUT,
+        device=HYMT2_DEVICE,
+        label="llama-cli 翻译",
+    ))
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:

@@ -49,6 +49,8 @@ from src import (
 from src.config import (
     SRT_ASR,
     SRT_BREAK_ON_COMMA,
+    SRT_LLM,
+    SRT_LLM_MODE,
     SRT_ENUM_COMMA_AS_SPACE,
     SRT_HOTWORDS,
     SRT_HOTWORDS_FILE,
@@ -386,6 +388,14 @@ def build_demo() -> gr.Blocks:
                             value=SRT_BREAK_ON_COMMA, scale=1,
                             info="逗号处即收条（一条字幕停在逗号上）。",
                         )
+                        srt_llm = gr.Dropdown(
+                            label="断句辅助 LLM Assist",
+                            choices=["off", "punct", "breaks", "both"],
+                            value=(SRT_LLM_MODE if SRT_LLM else "off"), scale=1,
+                            info="小模型补标点 / 判断每条含哪几个从句；"
+                                 "不产生时间轴，输出校验不过即退回规则。"
+                                 "模型与参数见 src/config.py 的 SRT_LLM*。",
+                        )
                     with gr.Row():
                         srt_width = gr.Slider(
                             label="每行宽度 Max Line Width",
@@ -428,9 +438,12 @@ def build_demo() -> gr.Blocks:
                         "断条与折行都落在标点上：以标点为界把文本切成从句"
                         "（标点之间的整段），从句整体成条、不从中间切开，"
                         "累积到每屏容量（每行宽度 × 每屏行数）为止；只有单个"
-                        "从句自己就超过一屏时才在该从句内部硬切。逗号断条打开"
-                        "时，逗号与句末标点一样直接收条（顿号、分号、冒号仍只"
-                        "作从句边界）。"
+                        "从句自己就超过一屏时才在该从句内部硬切（折行取均衡，"
+                        "避免末行只剩一两个字）。断条本身按整篇代价最优求解："
+                        "过短与语速过快计罚，句末标点/逗号倾向断、顿号等不倾向，"
+                        "停顿超上限处必断。逗号断条打开时逗号直接收条。"
+                        "「断句辅助」可让小模型补标点或判断每条含哪几个从句，"
+                        "模型不产生时间轴、输出校验不过即退回规则。"
                         "本区设置只在当前进程内生效，"
                         "持久化修改请编辑 **src/config.py** 顶部变量或设置同名"
                         "环境变量。"
@@ -598,7 +611,8 @@ def build_demo() -> gr.Blocks:
             outputs=[*outputs, terminal, log_state],
         )
         def _srt_fn(hotwords_v, audio, model_v, device_v, lang_v, itn_v, punct_v,
-                    enum_space_v, comma_v, gap_v, min_speech_v, width_v, lines_v,
+                    enum_space_v, comma_v, llm_v, gap_v, min_speech_v,
+                    width_v, lines_v,
                     min_cue_v, block_v, max_gap_v, min_block_v, buf):
             """点击生成字幕：src.subtitle.subtitles（Qwen3-ASR+ForcedAligner 词级
             或 VAD+SenseVoice 段级）→ SRT 文件 + 预览，日志入终端框。
@@ -631,6 +645,7 @@ def build_demo() -> gr.Blocks:
                     punctuation=bool(punct_v),
                     enum_comma_space=bool(enum_space_v),
                     break_on_comma=bool(comma_v),
+                    llm_mode=str(llm_v or "off"),
                     vad_merge_gap=float(gap_v or 0),
                     vad_min_speech=float(min_speech_v or 0),
                     max_line_width=int(width_v) if width_v else None,
@@ -662,7 +677,7 @@ def build_demo() -> gr.Blocks:
             _srt_fn,
             inputs=[srt_hotwords, srt_audio, srt_model, srt_device, srt_language,
                     srt_itn, srt_punctuation, srt_enum_space, srt_comma,
-                    srt_gap,
+                    srt_llm, srt_gap,
                     srt_min_speech, srt_width, srt_lines, srt_min_cue,
                     srt_block, srt_max_gap, srt_min_block, log_state],
             outputs=[srt_file, srt_preview, terminal, log_state],
