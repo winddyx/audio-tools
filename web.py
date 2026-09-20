@@ -175,7 +175,11 @@ def _cfg(model: str, device: str, **kw) -> Config:
 
 
 def _read_hotwords() -> str:
-    """SRT 页热词框初始值：根目录 hotword.txt 优先，其次 config.SRT_HOTWORDS。"""
+    """SRT 页热词框取值：根目录 hotword.txt 优先，其次 config.SRT_HOTWORDS。
+
+    由页面加载事件每次重读（见 build_demo 的 _on_page_open），所以本地修改
+    hotword.txt 后刷新网页即生效；构造组件时的取值只是首帧占位。
+    """
     if SRT_HOTWORDS_FILE:
         try:
             with open(SRT_HOTWORDS_FILE, encoding="utf-8") as f:
@@ -309,12 +313,15 @@ def build_demo() -> gr.Blocks:
             with gr.Tab("SRT 字幕生成 SRT Subtitles"):
                 with gr.Row():
                     with gr.Column(scale=1):
+                        # value 只是首帧占位：真正的初值由页面加载事件
+                        # （_on_page_open）每次刷新时从磁盘重读，见其说明。
                         srt_hotwords = gr.Textbox(
                             label="1. ASR 热词/上下文 Hotwords（仅 Qwen3-ASR）",
                             lines=3, interactive=True,
                             value=_read_hotwords(),
                             placeholder="专有名词/术语，如：赣州、贵阳、腾讯会议…"
-                                        "（每次生成写入根目录 hotword.txt）",
+                                        "（每次生成写入根目录 hotword.txt；"
+                                        "改文件后刷新页面即生效）",
                         )
                         srt_audio = gr.Audio(
                             label="2. 音频文件 Audio (wav)",
@@ -451,13 +458,19 @@ def build_demo() -> gr.Blocks:
 
         # ── 事件 ─────────────────────────────────────────
 
-        def _page_banner():
-            """页面（会话）打开时写入起始行：之后日志只从此刻开始记录。"""
+        def _on_page_open():
+            """页面（会话）加载时：写起始日志行 + 从磁盘重读热词框初值。
+
+            组件构造时的 value 只在进程启动时求值一次，刷新页面不会重新执行；
+            这里挂在 load 事件上，每次打开/刷新页面都重读 hotword.txt，改文件
+            或用其它页面提交过热词后，刷新即生效，无需重启服务。之后日志只从
+            此刻开始记录。
+            """
             buf = []
             buf.append(_term_line(
                 "INFO", "会话开始（本页于 %s 打开）"
                 % datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            return buf, _term_html(buf)
+            return gr.update(value=_read_hotwords()), buf, _term_html(buf)
 
         def _asr_on_upload(audio, device_v, buf):
             """上传参考音频后立即用 SenseVoice 转写，文本回填 ASR 显示框。"""
@@ -687,7 +700,8 @@ def build_demo() -> gr.Blocks:
             inputs=[hy_src, hy_prompt, log_state],
             outputs=[hy_out, terminal, log_state],
         )
-        demo.load(_page_banner, outputs=[log_state, terminal])
+        demo.load(_on_page_open,
+                  outputs=[srt_hotwords, log_state, terminal])
     return demo
 
 

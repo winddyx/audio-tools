@@ -78,6 +78,8 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   `request.context` 拼进 chat 模板），按 `SRT_HOTWORDS_PROMPT` 模板拼接
   （留空 = 原样用热词文本）；SenseVoice 无上下文接口，忽略并告警。取值顺序
   kwargs → `cfg.srt_hotwords` → `SRT_HOTWORDS` → 根目录 `hotword.txt`。
+  文件由 web 在每次页面加载（含刷新）时重读填入热词框、每次带音频点击生成时写回
+  一次，故改 `hotword.txt` 后刷新网页即生效，无需重启 web 服务。
 - `llamarun.py` — llama.cpp 单次补全的共用运行器（引擎定位/自动 clone+编译
   `llama-completion`、模型定位、`run_once`）；`LLAMA_CLI` 留空即自动构建
   `vendor/llama.cpp`，模型只在 HF 默认缓存。
@@ -137,8 +139,9 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   指向，含 `{text}` 占位，可直接手改）+ 粤语译文输出；推理用 Hy-MT2
   （`llama-completion` 子进程，`LLAMA_CLI` 留空自动构建 `vendor/llama.cpp`），
   模型首用自动经 HF 下载，长文案自动分块（HYMT2_CHUNK_CHARS）；
-  3) SRT 字幕生成页：左栏＝ASR 热词/上下文输入框（仅 Qwen3-ASR 生效；初始值
-  读根目录 `hotword.txt`，每次点击生成写回一次）+ 音频 wav + 生成按钮，右栏＝
+  3) SRT 字幕生成页：左栏＝ASR 热词/上下文输入框（仅 Qwen3-ASR 生效；值在每次
+  页面加载/刷新时重读根目录 `hotword.txt`，改文件后刷新即生效、无需重启服务，
+  每次带音频点击生成时写回一次）+ 音频 wav + 生成按钮，右栏＝
   SRT 文件下载 + 预览；
   底部折叠区「模型与 ASR 设置」＝ASR 模型（`SRT_ASR` 默认 qwen3_asr：Qwen3-ASR +
   ForcedAligner 词级时间轴 + 带标点转写，按标点断句；sensevoice：VAD 分段 +
@@ -163,6 +166,10 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   canonical 解析）：blobs/ 哈希名无扩展名、snapshots/ 软链被还原成 blob，都会报
   `unsupported tensor source format`；`hf._ensure_gguf_file` 在 HF 缓存仓库目录内
   硬链接生成带 .gguf 的别名（同 inode 不占空间，跨盘退复制）再返回给引擎。
+- **改动流程**：每次改动完成后先审阅（通读自己的 diff，检查是否只含预期改动、无残留
+  调试代码或临时文件），再 debug 验证（`compileall` + 相关冒烟/真实素材端到端），
+  确认无问题才 commit 并推送到 GitHub（`git push origin main`，origin 为本仓库
+  `git@github.com:winddyx/audio-tools.git`）；验证不通过或尚有疑问时不推送。
 
 ## Notes
 
