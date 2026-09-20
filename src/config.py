@@ -201,10 +201,10 @@ SRT_ITN = _env_bool("SRT_ITN", True)
 
 # 时间轴与排版（两条路径共用；行宽按 CJK=2 / 其余=1 计）
 # 中文一行 16 汉字（宽度 32）是国内字幕通行上限，故默认 32 而非 42/36。
-SRT_MAX_LINE_WIDTH = _env_int("SRT_MAX_LINE_WIDTH", 32)   # 每行宽度上限（≈16 汉字）
+SRT_MAX_LINE_WIDTH = _env_int("SRT_MAX_LINE_WIDTH", 64)   # 每行宽度上限（≈16 汉字）
 # 单条字幕最多行数：断条以标点为界（从句整体成条、不从中间切开），一屏 2 行
 # （≈32 汉字）才能让多数整句落在同一条里；设 1 则长从句只能在中途硬切。
-SRT_MAX_LINES = _env_int("SRT_MAX_LINES", 2)              # 单条字幕最多行数
+SRT_MAX_LINES = _env_int("SRT_MAX_LINES", 1)              # 单条字幕最多行数
 # 折行：从句整体成行，从句自己宽过一行时在该从句内部拆行（均衡 + 避免孤行）
 # 单条字幕语速上限（CJK 字数/秒）：超过的条目按超出比例计罚，倾向另起一条
 # 或由 SRT_MIN_BLOCK_SECONDS 延长显示。国内字幕惯例 9-17 字/秒；0 = 不检查
