@@ -61,8 +61,10 @@ uv run python -m compileall -q src vc.py web.py   # 语法检查
   SRT 由本模块排版：断条与折行共用同一套"从句"逻辑——以标点为界把文本
   切成从句（标点之间的整段），从句是断条与换行的原子单位，整体成条、不从
   中间切开；从句贪心累积到每屏容量（每行宽度 × 每屏行数），句末标点成句
-  即断、句间停顿超 `SRT_MAX_GAP_SECONDS` 即断、超 `SRT_MAX_BLOCK_SECONDS`
-  即断；只有单个从句自己就超过一屏时，才在该从句内部按条目边界硬切。
+  即断（`SRT_BREAK_ON_COMMA=true` 时逗号也无条件收条，顿号/分号/冒号只作
+  从句边界）、句间停顿超 `SRT_MAX_GAP_SECONDS` 即断、超
+  `SRT_MAX_BLOCK_SECONDS` 即断；只有单个从句自己就超过一屏时，才在该从句
+  内部按条目边界硬切。
   行宽按 CJK=2 计、中文不插空格。推理全在引擎侧。
   热词/上下文（`SRT_HOTWORDS` 或 kwargs `hotwords`，**仅 qwen3_asr 生效**）
   经引擎 `--text` 作为 Qwen3-ASR 的系统提示词注入（引擎侧把它当

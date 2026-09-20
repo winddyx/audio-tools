@@ -51,6 +51,7 @@ from .config import (
     Config,
     MODELS_DIR,
     SRT_ASR,
+    SRT_BREAK_ON_COMMA,
     SRT_ENUM_COMMA_AS_SPACE,
     SRT_HOTWORDS,
     SRT_HOTWORDS_FILE,
@@ -120,6 +121,7 @@ class SrtOptions:
     max_gap_seconds: float
     min_block_seconds: float
     sentence_break_ratio: float
+    break_on_comma: bool       # 逗号（，）处是否即断条
     min_cue_width: int         # 碎条阈值（宽度），低于此宽度尽量并入相邻条
     punctuation: bool          # 字幕文本是否输出标点
     enum_comma_space: bool     # 顿号（、）是否输出为空格
@@ -184,6 +186,7 @@ def _options(kwargs: dict) -> SrtOptions:
             _pick(kwargs, "min_block_seconds", SRT_MIN_BLOCK_SECONDS)),
         sentence_break_ratio=float(
             _pick(kwargs, "sentence_break_ratio", SRT_SENTENCE_BREAK_RATIO)),
+        break_on_comma=_pick_bool(kwargs, "break_on_comma", SRT_BREAK_ON_COMMA),
         min_cue_width=int(_pick(kwargs, "min_cue_width", SRT_MIN_CUE_WIDTH)),
         punctuation=_pick_bool(kwargs, "punctuation", SRT_PUNCTUATION),
         enum_comma_space=_pick_bool(kwargs, "enum_comma_space",
@@ -198,9 +201,16 @@ _CJK_RANGES = (
     (0xFE30, 0xFE6F), (0xFF00, 0xFF60), (0xFFE0, 0xFFE6), (0x20000, 0x3FFFD),
 )
 
+# 从句末尾的断条级别（见 _break_kind）
+_BREAK_NONE = ""              # 不是断条点：只作从句边界
+_BREAK_COMMA = "comma"        # 逗号：SRT_BREAK_ON_COMMA 打开时无条件断条
+_BREAK_SENTENCE = "sentence"  # 句末标点：宽度够即断条
+
 # 断句标点：句末（成句即可断）与句内（超限时优先在此断）；数字里的 "."
 # 由 _punct_kind 另行排除（4.5 / 1,000 / twenty-two 不算断句）
 _SENTENCE_PUNCT = "。！？!?…."
+# 逗号（SRT_BREAK_ON_COMMA 开关作用的对象）与其余句内标点（只作从句边界）
+_COMMA_PUNCT = "，,"
 _CLAUSE_PUNCT = "，、；：,;:-—"
 _BREAK_PUNCT = _SENTENCE_PUNCT + _CLAUSE_PUNCT
 
@@ -416,26 +426,63 @@ def _items_from_words(words: list[tuple[str, float, float]],
     return items
 
 
-def _units(items: list[tuple]) -> list[tuple[list[tuple], bool]]:
-    """按标点边界把条目流切成从句单元：[(条目列表, 是否以句末标点结尾)]。
+# 末尾成对的闭合符号（引号 / 右括号）：判断"末尾是不是标点"时先剥掉
+_CLOSING_MARKS = "”\"’'）)】」』》〉>"
+
+
+def _strip_tail(text: str) -> str:
+    """去掉末尾空白与闭合符号，便于判断这条文字的收尾标点。"""
+    return text.rstrip().rstrip(_CLOSING_MARKS).rstrip()
+
+
+def _break_kind(text: str, opts: SrtOptions) -> str:
+    """该从句末尾的断条级别（从句能否直接收条）：
+
+    - "sentence"：句末标点（。！？），宽度达到 SRT_SENTENCE_BREAK_RATIO 即收条，
+      避免过短的半句单独成条；
+    - "comma"：逗号（SRT_BREAK_ON_COMMA 打开时），无条件收条；
+    - ""：其余句内标点（顿号、分号、冒号），只作从句边界，容量不够时才在这里断。
+    """
+    stripped = _strip_tail(text)
+    if not stripped:
+        return _BREAK_NONE
+    if stripped[-1] in _SENTENCE_PUNCT:
+        return _BREAK_SENTENCE
+    if opts.break_on_comma and stripped[-1] in _COMMA_PUNCT:
+        return _BREAK_COMMA
+    return _BREAK_NONE
+
+
+def _units(items: list[tuple],
+           opts: SrtOptions) -> list[tuple[list[tuple], str]]:
+    """按标点边界把条目流切成从句单元：[(条目列表, 断条级别)]。
 
     从句单元是断条的原子单位：单元内部没有标点（标点都紧跟在它前面的那个
-    条目里），因此只能整体成条；单元之间可以断条。标点不可用（未开启或对齐
-    失败）时全部条目属同一个单元，退化为纯容量切分。
+    条目里），因此只能整体成条；单元之间可以断条，级别决定能否直接收条
+    （见 _break_kind）。标点不可用（未开启或对齐失败）时全部条目属同一个
+    单元，退化为纯容量切分。
     """
-    units: list[tuple[list[tuple], bool]] = []
+    units: list[tuple[list[tuple], str]] = []
     cur: list[tuple] = []
-    sent = False
+    kind = _BREAK_NONE
     for it in items:
         if cur and (it[3] or it[4]):          # 本条目之前有标点：从句边界
-            units.append((cur, sent))
-            cur, sent = [], False
+            units.append((cur, kind or _break_kind(cur[-1][0], opts)))
+            cur, kind = [], _BREAK_NONE
         cur.append(it)
         if any(c in _SENTENCE_PUNCT for c in it[0]):
-            sent = True
+            kind = _BREAK_SENTENCE
     if cur:
-        units.append((cur, sent))
+        units.append((cur, kind or _break_kind(cur[-1][0], opts)))
     return units
+
+
+def _break_width(kind: str, opts: SrtOptions) -> int:
+    """该级别收条所需的最小宽度：逗号无条件收条（0），句末标点要达到
+    SRT_SENTENCE_BREAK_RATIO（过短的半句不单独成条；比例设 0 则一律收条）。"""
+    if kind == _BREAK_COMMA:
+        return 0
+    return max(int(opts.max_width * opts.sentence_break_ratio), 1)
 
 
 def _append_width(cur: list, width: int, items: list) -> int:
@@ -460,7 +507,7 @@ def _layout(items: list, opts: SrtOptions) -> list[list[tuple]]:
     lines: list[list[tuple]] = []
     cur: list[tuple] = []
     width = 0
-    for unit_items, _sent in _units(items):
+    for unit_items, _kind in _units(items, opts):
         if _prefix_widths(unit_items)[-1] <= max_width:
             need = _append_width(cur, width, unit_items)
             if cur and need > max_width:
@@ -488,22 +535,22 @@ def _fits(items: list, opts: SrtOptions) -> bool:
     return len(_layout(items, opts)) <= opts.max_lines
 
 
-def _parts(units: list, opts: SrtOptions) -> list[tuple[list[tuple], bool]]:
+def _parts(units: list, opts: SrtOptions) -> list[tuple[list[tuple], str]]:
     """从句单元 → 条目分组：单元超出一屏容量时在容量内按条目边界硬切。
 
     只有标点之间无处可断（单个从句自己就超过一屏）时才走这里：硬切点尽量
-    靠后（多装字），切出的后半段不带句末标记，继续与后续从句一起累积。
+    靠后（多装字），切出的后半段不带断条级别，继续与后续从句一起累积。
     """
-    out: list[tuple[list[tuple], bool]] = []
-    for items, sent in units:
+    out: list[tuple[list[tuple], str]] = []
+    for items, kind in units:
         cur: list[tuple] = []
         for it in items:
             if cur and not _fits(cur + [it], opts):
-                out.append((cur, False))
+                out.append((cur, _BREAK_NONE))
                 cur = []
             cur.append(it)
         if cur:
-            out.append((cur, sent))
+            out.append((cur, kind))
     return out
 
 
@@ -517,15 +564,25 @@ def _flush(cues: list[Cue], items: list) -> None:
 def _split_text(text: str, opts: SrtOptions) -> list[str]:
     """把文本切成若干块：每块折行后不超过每屏行数（供拆分时间轴用）。
 
-    块边界优先标点：标点之间的从句整体成块；从句自己就超出一屏容量时才在
+    块边界优先标点：标点之间的从句整体成块；停在断条标点上即收块（逗号见
+    SRT_BREAK_ON_COMMA，句末标点需宽度够）；从句自己就超出一屏容量时才在
     该从句内部按条目边界硬切，避免把词组从中间切开。
     """
     blocks: list[str] = []
-    for items, _sent in _parts(_units(_text_items(text)), opts):
-        block = _join_atoms([it[0] for it in items])
-        if block:
-            blocks.append(block)
-    return blocks
+    cur: list[tuple] = []
+    cur_kind = _BREAK_NONE
+    for items, kind in _parts(_units(_text_items(text), opts), opts):
+        if cur:
+            width = _text_width(_join_atoms([it[0] for it in cur]))
+            if (not _fits(cur + items, opts)
+                    or (cur_kind and width >= _break_width(cur_kind, opts))):
+                blocks.append(_join_atoms([it[0] for it in cur]))
+                cur = []
+        cur += items
+        cur_kind = kind
+    if cur:
+        blocks.append(_join_atoms([it[0] for it in cur]))
+    return [b for b in blocks if b]
 
 
 def _render_lines(text: str, opts: SrtOptions) -> list[str]:
@@ -577,34 +634,34 @@ def _cues_from_words(words: list[tuple[str, float, float]],
     片段为空串，全篇退化为一个从句，按容量与停顿切分。
 
     收条条件（任一满足即收，下一条从当前从句开始）：
-    句间停顿超过 max_gap_seconds、上一条已停在句末标点且宽度达到
-    sentence_break_ratio、加入下一个从句会超出每屏容量、加入后超出单条最长
-    秒数。单个从句自己就超过每屏容量时（标点之间无处可断），在 _parts 里
-    按条目边界硬切。
+    句间停顿超过 max_gap_seconds、上一条停在逗号上（break_on_comma 打开时，
+    无条件收条）、上一条停在句末标点上且宽度达到 sentence_break_ratio、
+    加入下一个从句会超出每屏容量、加入后超出单条最长秒数。单个从句自己就
+    超过每屏容量时（标点之间无处可断），在 _parts 里按条目边界硬切。
     """
     cues: list[Cue] = []
     buf: list[tuple] = []
-    buf_sent = False
-    min_sentence_width = max(int(opts.max_width * opts.sentence_break_ratio), 1)
-    for items, sent in _parts(_units(_items_from_words(words, breaks)), opts):
+    buf_kind = _BREAK_NONE
+    for items, kind in _parts(_units(_items_from_words(words, breaks), opts),
+                              opts):
         if buf:
             width = _text_width(_join_atoms([b[0] for b in buf]))
             gap = items[0][1] - buf[-1][2]
             if (gap > opts.max_gap_seconds
-                    or (buf_sent and width >= min_sentence_width)
+                    or (buf_kind and width >= _break_width(buf_kind, opts))
                     or not _fits(buf + items, opts)
                     or (items[-1][2] - buf[0][1]) > opts.max_block_seconds):
                 _flush(cues, buf)
                 buf = []
         buf.extend(items)
-        buf_sent = sent
+        buf_kind = kind
     _flush(cues, buf)
     return cues
 
 
 def _ends_sentence(text: str) -> bool:
     """该条文字是否停在句末标点上。"""
-    stripped = text.rstrip()
+    stripped = _strip_tail(text)
     return bool(stripped) and stripped[-1] in _SENTENCE_PUNCT
 
 
@@ -947,6 +1004,7 @@ def subtitles(cfg: Config, logger: logging.Logger, **kwargs) -> SrtResult:
         系统提示词注入；留空用 cfg.srt_hotwords / SRT_HOTWORDS / hotword.txt）；
       punctuation（字幕文本是否输出标点；留空用 SRT_PUNCTUATION）、
       enum_comma_space（顿号转空格；留空用 SRT_ENUM_COMMA_AS_SPACE）、
+      break_on_comma（逗号处即收条；留空用 SRT_BREAK_ON_COMMA）、
       min_cue_width（碎条阈值宽度；留空用 SRT_MIN_CUE_WIDTH，0 = 关闭）、
       max_line_width / max_lines / max_block_seconds / max_gap_seconds /
       min_block_seconds / sentence_break_ratio

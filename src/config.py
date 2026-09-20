@@ -208,8 +208,13 @@ SRT_MAX_LINES = _env_int("SRT_MAX_LINES", 2)              # 单条字幕最多�
 SRT_MAX_BLOCK_SECONDS = _env("SRT_MAX_BLOCK_SECONDS", "6.0")  # 单条字幕最长秒数
 SRT_MAX_GAP_SECONDS = _env("SRT_MAX_GAP_SECONDS", "1.0")      # 句间断句间隔（秒）
 SRT_MIN_BLOCK_SECONDS = _env("SRT_MIN_BLOCK_SECONDS", "0.8")  # 单条字幕最短秒数
-# 成句标点后即可断句的最小宽度占单行宽度的比例：过短的半句不单独成条
+# 句末标点（。！？）后即可收条所需的最小宽度占单行宽度的比例：过短的半句
+# 不单独成条（设 0 = 一律收条）。逗号断条不受它约束，见 SRT_BREAK_ON_COMMA。
 SRT_SENTENCE_BREAK_RATIO = _env("SRT_SENTENCE_BREAK_RATIO", "0.5")
+# 逗号（，）处即断条：True（默认）= 逗号与句末标点一样直接收条，一条字幕停在
+# 逗号上；False = 逗号只作从句边界，容量不够时才在这里断。顿号（、）、分号
+# （；）、冒号（：）不受此开关影响，始终只作从句边界。
+SRT_BREAK_ON_COMMA = _env_bool("SRT_BREAK_ON_COMMA", True)
 # 碎条阈值（宽度，CJK=2）：渲染前把过短的条目并入相邻条（上一条停在句末时
 # 优先并入下一条），避免极少见的一两字孤条（长停顿处不硬并）。8 = 4 个汉字；
 # 0 = 关闭
