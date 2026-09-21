@@ -103,11 +103,12 @@ def _clone_and_build(logger: logging.Logger) -> None:
     # moss（MOSS-TTS-Local v1.5 所在目标，覆盖 moss_tts_local 与
     # moss_tts_nano 两族，见 audiocpp CMakeLists audiocpp_add_model(moss)）/
     # qwen3_tts（Qwen3-TTS 12Hz 1.7B Base）/ fish_audio（Fish Audio S2-Pro）
-    # 为零样本语音克隆；qwen3_asr + qwen3_forced_aligner 供 SRT 字幕的词级
-    # 时间轴（src/subtitle.py 的 qwen3_asr 路径，--words-out 需要对齐器）；
-    # 均已在本项目所用引擎分支实现。
+    # 为零样本语音克隆；auk（腾讯混元 AuK / AuK-Flash，社区模型目录）同为
+    # 零样本克隆；qwen3_asr + qwen3_forced_aligner 供 SRT 字幕的词级时间轴
+    # （src/subtitle.py 的 qwen3_asr 路径，--words-out 需要对齐器）；
+    # 均已在本项目所用引擎分支（config.AUDIOCPP_REF，默认 main）实现。
     models = ("omnivoice,index_tts2,sense_asr,fireredtts3,cosyvoice3,"
-              "moss,qwen3_tts,fish_audio,qwen3_asr,qwen3_forced_aligner")
+              "moss,qwen3_tts,fish_audio,qwen3_asr,qwen3_forced_aligner,auk")
     args = [
         "-S", src_dir, "-B", os.path.join(src_dir, "build", "audiocpp"),
         "-DCMAKE_BUILD_TYPE=Release",

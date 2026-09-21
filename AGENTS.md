@@ -2,7 +2,8 @@
 
 语音克隆工具：参考音频 + 文本 → 克隆音色朗读。推理由 [audio.cpp](https://github.com/0xShug0/audio.cpp)
 （ggml C++ 引擎，`audiocpp_cli`）子进程完成，Python 只做编排。多 TTS 模型可切换
-（`TTS_MODEL`：omnivoice / indextts2 / fireredtts3 / cosyvoice3 / moss_tts_local / qwen3_tts / fish_audio），ASR 用
+（`TTS_MODEL`：omnivoice / indextts2 / fireredtts3 / cosyvoice3 / moss_tts_local / qwen3_tts / fish_audio /
+auk / auk_flash），ASR 用
 SenseVoice-Small 自动转写参考音频。
 只做语音克隆，不做声音设计/自动音色。
 
@@ -35,11 +36,11 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   （纯平台探测 cuda>xpu>mps>cpu，darwin arm64→mps）+ `_quiet_hf_logs()`。所有常量 `_env(...)`
   可覆盖；**无 torch**。
 - `audiocpp.py` — 模型无关引擎运行器：`_ensure_binary()`（AUDIOCPP_BIN→glob vendor/build/*
-  →自动 `_clone_and_build()` custom 十族 omnivoice,index_tts2,sense_asr,fireredtts3,
-  cosyvoice3,moss,qwen3_tts,fish_audio,qwen3_asr,qwen3_forced_aligner（moss 为 build
+  →自动 `_clone_and_build()` custom 十一族 omnivoice,index_tts2,sense_asr,fireredtts3,
+  cosyvoice3,moss,qwen3_tts,fish_audio,qwen3_asr,qwen3_forced_aligner,auk（moss 为 build
   目标名，覆盖 moss_tts_local/moss_tts_nano 两族；qwen3_asr + qwen3_forced_aligner
-  供 SRT 字幕词级时间轴）；clone 分支取 config.AUDIOCPP_REF，默认 dev——
-  cosyvoice3 目前只在引擎 dev 分支实现）、device→`--backend`
+  供 SRT 字幕词级时间轴；auk 为社区模型目标）、clone 分支取 config.AUDIOCPP_REF（默认
+  main：本项目各族都已在 main，AuK 仅 main 实现）、device→`--backend`
   映射（cuda/metal/cpu，""→best，xpu→cpu）、`run_cli()`（GPU 初始化失败自动 CPU 重试、
   `AUDIOCPP_DEBUG` 透传 stdout/stderr）、`_run_quiet()`（须传 env）。
 - `omnivoice.py` / `indextts2.py` / `fireredtts3.py` / `cosyvoice3.py` /
@@ -48,6 +49,21 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   手工放置优先，缺失经 HF 下载 `audio-cpp/audio.cpp-gguf` 且文件留在 HF 默认缓存）与
   `generate(cfg, logger, **kwargs)` →
   `AudioResult(audio: np.ndarray, sampling_rate, chunks)`。GGUF/族常量在各自文件。
+- `auk.py` — AuK / AuK-Flash 模型核心（audiocpp `--family auk`，社区模型）：与其它族
+  不同，权重是**组件目录**（`config/auk-base.yaml` + `config/auk-flash.yaml` +
+  `tokenizer/` + 生成器 / Qwen2.5-Omni-3B 条件编码器 / VAE 三组 GGUF），
+  `--model` 传目录、组件由
+  `--session-option auk.*` 指定，下载经 `hf._ensure_gguf_tree` 在 HF 缓存内生成整棵
+  别名目录（`AUK_LOCAL_DIR` 手工放置整个目录优先）；零样本克隆用法是「参考音频
+  （`--voice-ref`）+ 上游 zero-shot 指令模板」（AuK 要自然语言指令而非裸文本，
+  模板见 `AUK_ZERO_SHOT_TEMPLATE`，`AUK_INSTRUCT` 非空时改走 instruct TTS 指令），
+  且**必须显式给输出时长**（不给就按参考音频长度输出）：由 `_estimate_duration`
+  按参考音频时长 × 目标/参考文本 UTF-8 字节比估算并夹在 `AUK_MIN/MAX_DURATION`
+  之间；变体由 TTS_MODEL 决定（`auk` = Base 32 步 / `auk_flash` = 固定 4 步）；
+  该族不支持引擎文本分块（`--text-chunk-size` 无效），长文本受时长上限约束；
+  且引擎的 AuK session 构造函数硬性要求 CUDA 后端（非 CUDA 直接抛
+  `AuK native session currently requires CUDA`），故仅在 NVIDIA GPU 环境可用
+  （generate 里对非 cuda/best 后端提前告警）。
 - `sensevoice.py` — ASR 核心：`_transcribe_ref(cfg, logger)`（16 kHz mono 自动重采样；
   audiocpp sense_asr 族；**须以 cwd=audiocpp 仓库根运行**，silero_vad 相对路径）；解析
   stdout `text_output=` 行。
@@ -86,7 +102,9 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
 - `segment_llm.py` — 小 LLM 辅助断句（B1 补标点 / B2 断条分组）：提示词、
   严格校验、内容哈希缓存、分批请求；由 `subtitle.subtitles(llm_mode=...)`
   接入，默认关闭（`SRT_LLM`）。
-- `hf.py` — HF 下载：本地优先 + hf-mirror 兜底（`HF_NO_MIRROR_FALLBACK=1` 关闭）。
+- `hf.py` — HF 下载：本地优先 + hf-mirror 兜底（`HF_NO_MIRROR_FALLBACK=1` 关闭）；
+  `_ensure_gguf_file`（单文件 .gguf 别名）/ `_ensure_gguf_tree`（多文件组件目录，
+  如 AuK）都在 HF 缓存仓库目录内按真实文件名生成硬链接别名。
 - `hymt2.py` — LLM 文案翻译（普通话→粤语，TTS 输入前处理）：Hy-MT2-1.8B
   （腾讯开源，官方支持粤语 yue）+ `llama-completion`（llama.cpp 子进程；
   `LLAMA_CLI` 留空时自动 clone + cmake 编译 `vendor/llama.cpp`，不依赖本机
@@ -95,7 +113,7 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   `translate(text, prompt=None, logger=None)` 按 `HYMT2_CHUNK_CHARS` 长文分块
   逐段翻译；采样/设备参数在 config 顶部常量（腾讯官方推荐值）。
 - `pipeline.py` — 唯一编排入口：`synthesize()`（ASR 转写→按 `cfg.tts_model` 分发
-  omnivoice/indextts2/fireredtts3/cosyvoice3/moss_tts_local/qwen3_tts/fish_audio
+  omnivoice/indextts2/fireredtts3/cosyvoice3/moss_tts_local/qwen3_tts/fish_audio/auk
   →写盘）、`draw()`（抽卡 N 次）。
   vc/web 不直接调模型/ASR。
 
@@ -130,7 +148,8 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   按抽卡次数展示结果（`_clone_fn` 是生成器事件处理器：每合成出一个结果就
   yield 上屏并刷新终端，不等全部抽卡结束）；页面底部折叠区
   「模型与运行设置」＝模型选择（omnivoice/
-  indextts2/fireredtts3/cosyvoice3/moss_tts_local/qwen3_tts/fish_audio）+ 设备/
+  indextts2/fireredtts3/cosyvoice3/moss_tts_local/qwen3_tts/fish_audio/
+  auk（AuK Base）/auk_flash（AuK-Flash 四步档））+ 设备/
   语言/抽卡次数，为进程内运行期设置，持久化修改仍以 src/config.py 顶部变量
   （或同名 env）为准；**生成参数（步数/采样）不在界面暴露**，统一由
   config.py 顶部常量控制（默认最高质量档）；

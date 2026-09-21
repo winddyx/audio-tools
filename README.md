@@ -54,6 +54,7 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
     ├── moss_tts_local.py  # MOSS-TTS-Local v1.5 模型核心（零样本语音克隆）
     ├── qwen3_tts.py       # Qwen3-TTS 12Hz 1.7B Base 模型核心（零样本语音克隆）
     ├── fish_audio.py      # Fish Audio S2-Pro 模型核心（零样本语音克隆）
+    ├── auk.py             # AuK / AuK-Flash 模型核心（零样本语音克隆，组件目录）
     ├── sensevoice.py      # SenseVoice-Small ASR 核心（参考音频转写）
     ├── subtitle.py        # SRT 字幕核心（VAD+SenseVoice 段级 / Qwen3-ASR 词级）
     ├── hf.py              # HuggingFace 下载（本地优先 + hf-mirror 兜底 + .gguf 别名）
@@ -94,7 +95,7 @@ uv run python web.py
   读入文本框）→ 待合成文本；右栏＝状态 + 按抽卡次数展示的生成音频槽。
 - **模型与运行设置**（语音克隆页底部折叠区）：模型选择（omnivoice /
   indextts2 / fireredtts3 / cosyvoice3 / moss_tts_local / qwen3_tts /
-  fish_audio）+ 推理设备 / 语言 / 抽卡次数。设置为进程内运行期覆盖；
+  fish_audio / auk / auk_flash）+ 推理设备 / 语言 / 抽卡次数。设置为进程内运行期覆盖；
   持久化修改请编辑 `src/config.py` 顶部变量或设置同名环境变量。
   生成参数（步数 / 采样等）不在界面暴露，统一在 config.py 顶部调整
   （默认最高质量档）。
@@ -114,7 +115,7 @@ uv run python web.py
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `TTS_MODEL` | `omnivoice` | TTS 模型：`omnivoice` / `indextts2` / `fireredtts3` / `cosyvoice3` / `moss_tts_local` / `qwen3_tts` / `fish_audio` |
+| `TTS_MODEL` | `omnivoice` | TTS 模型：`omnivoice` / `indextts2` / `fireredtts3` / `cosyvoice3` / `moss_tts_local` / `qwen3_tts` / `fish_audio` / `auk`（AuK Base）/ `auk_flash`（AuK-Flash 四步档） |
 | `LANGUAGE` | 空 | 合成语言（如 `zh` / `en` / `yue`）；空 = 自动 |
 | `DRAW_COUNT` | `2` | 抽卡次数 |
 | `OUTPUT_DIR` | 文本所在目录 | CLI 输出目录 |
@@ -131,10 +132,18 @@ uv run python web.py
 | `QWEN3TTS_TEMPERATURE` / `QWEN3TTS_TOP_P` / `QWEN3TTS_TOP_K` / `QWEN3TTS_REPETITION_PENALTY` | `0.9` / `1.0` / `50` / `1.05` | Qwen3-TTS 主 talker 采样参数（空/0 = 引擎默认；种子用 `GEN_SEED`） |
 | `FISH_AUDIO_TEMPERATURE` / `FISH_AUDIO_TOP_P` / `FISH_AUDIO_TOP_K` / `FISH_AUDIO_MAX_NEW_TOKENS` | `0.8` / `0.8` / `30` / `1024` | Fish Audio S2-Pro 采样参数（空/0 = 引擎默认；种子用 `GEN_SEED`） |
 | `GEN_SEED` | `-1` | 固定随机种子（`-1` = 随机；设同值可复现结果） |
+| `AUK_GGUF_DTYPE` | `q8_0` | AuK 生成器精度档：`f32`（6.1 GB）/ `f16`（3.1 GB）/ `q8_0`（1.6 GB） |
+| `AUK_QWEN_GGUF` / `AUK_VAE_GGUF` | `qwen2.5-omni-3b-q8_0.gguf` / `auk-vae-f32.gguf` | AuK 条件编码器（Qwen2.5-Omni-3B，可换 `qwen2.5-omni-3b-bf16.gguf`）/ VAE（固定 F32） |
+| `AUK_ZERO_SHOT_TEMPLATE` | `Say the following with the same voice: "{text}"` | AuK 零样本克隆指令模板（含 `{text}` 占位；AuK 需要自然语言指令而非裸文本） |
+| `AUK_INSTRUCT` | 空 | 声音描述（引擎 `instruct`）：非空时待朗读文本按普通文本传入并由引擎包成 instruct TTS 指令；空 = 纯零样本克隆 |
+| `AUK_DURATION_SEC` / `AUK_DURATION_SCALE` | 空 / `1.0` | AuK 输出时长（秒）：空 = 自动估算（参考音频时长 × 目标/参考文本 UTF-8 字节比，缺参考文本时按 `AUK_CHARS_PER_SECOND`），再乘系数 |
+| `AUK_CHARS_PER_SECOND` / `AUK_MIN_DURATION` / `AUK_MAX_DURATION` | `4.5` / `1.0` / `60.0` | 无参考文本时的语速估算（字/秒）/ 输出时长下限 / 上限（估得超上限则截到上限并告警） |
+| `AUK_INFERENCE_STEPS` / `AUK_GUIDANCE_SCALE` | `32` / `2.0` | AuK Base 采样步数 / 引导强度（官方基准；Flash 固定 4 步且关闭引导，两项无效；0/空 = 引擎默认） |
+| `AUK_MEM_SAVER` / `AUK_ATTENTION` | `false` / 空 | 分阶段释放权重（省显存/内存但明显变慢）/ Flow 注意力（空 = 引擎 `auto`） |
 | `TEXT_CHUNK_SIZE` | `160` | 长文本分块每块上限（`0` = 不分块；修复长文吞字/乱码，实测 OmniVoice 相似度 0.877→0.982） |
 | `TEXT_CHUNK_MODE` | 空 | 分块模式：空 = 自动（输入分段且每段 ≤ 上限用 `endline` 按换行，否则 `default` 按标点断句）；可设 `endline` / `tag_aware` / `japanese` / `default` |
 | `AUDIOCPP_BIN` / `AUDIOCPP_SRC` | 空 | 已编译二进制 / 已有源码（留空自动构建到 vendor/） |
-| `AUDIOCPP_REF` | `dev` | 引擎 clone/构建分支（cosyvoice3 目前仅在 dev 分支实现；main 合并后可改回 `main`） |
+| `AUDIOCPP_REF` | `main` | 引擎 clone/构建分支（AuK 只在 main 实现；dev 是 main 的历史提交） |
 | `ASR_MODEL` | 空 | 本地 SenseVoice GGUF 路径（默认经 HF 下载） |
 | `SRT_ASR` | `qwen3_asr` | SRT 字幕的 ASR 路径：`qwen3_asr`（Qwen3-ASR + ForcedAligner，词级时间轴 + 带标点转写，默认）/ `sensevoice`（VAD 分段 + SenseVoice，段级时间轴、无下载） |
 | `SRT_VAD_MERGE_GAP` / `SRT_VAD_MIN_SPEECH` | `0.5` / `0.3` | VAD 相邻段合并间隙 / 丢弃的最短语音段（秒；仅 sensevoice 路径） |
@@ -177,16 +186,21 @@ uv run python web.py
   - Fish Audio S2-Pro（q8_0）：`audio-cpp/audio.cpp-gguf` →
     `Fish-Audio-S2-Pro-GGUF/fish-audio-s2-pro-q8_0.gguf`
     （零样本语音克隆）
+  - AuK / AuK-Flash（组件目录，默认 q8_0）：`audio-cpp/AuK-Base-and-Flash-GGUF`
+    → 生成器 `auk-base-q8_0.gguf` / `auk-flash-q8_0.gguf` + 条件编码器
+    `qwen2.5-omni-3b-q8_0.gguf`（Qwen2.5-Omni-3B）+ `auk-vae-f32.gguf` +
+    `config/auk-base.yaml` + `config/auk-flash.yaml` + `tokenizer/`
+    （零样本语音克隆，24 kHz；引擎的 AuK session 硬性要求 CUDA 后端，
+    即需要 NVIDIA GPU，macOS/Metal 与 CPU 上会直接报错）
 - ASR：`FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp` →
   `sensevoice-small-q8-audiocpp-v1.gguf`
 - 引擎：audio.cpp 首次运行自动 clone + cmake 构建到 `vendor/audiocpp/`
   （custom 模型集：omnivoice / index_tts2 / sense_asr / fireredtts3 /
-  cosyvoice3 / moss / qwen3_tts / fish_audio；moss 目标覆盖 moss_tts_local
-  与 moss_tts_nano 两族，其余除 cosyvoice3 外均已在引擎 main/dev 分支实现；
-  clone 分支由 `AUDIOCPP_REF` 决定，默认 `dev`——cosyvoice3 族目前只在 dev
-  分支实现，main 合并后可改回；引擎/源码/权重均 gitignore，删除后首跑会
-  重新构建下载；macOS 全新机器需 brew libomp，audiocpp.py 已注入
-  include/flag）
+  cosyvoice3 / moss / qwen3_tts / fish_audio / qwen3_asr /
+  qwen3_forced_aligner / auk；moss 目标覆盖 moss_tts_local 与 moss_tts_nano
+  两族；clone 分支由 `AUDIOCPP_REF` 决定，默认 `main`——AuK 仅在 main 实现；
+  引擎/源码/权重均 gitignore，删除后首跑会重新构建下载；macOS 全新机器需
+  brew libomp，audiocpp.py 已注入 include/flag）
 
 ## CLI 阶段化流程（`[i/6]`）
 

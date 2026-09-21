@@ -97,9 +97,11 @@ TMP_DIR = os.path.join(_PROJECT_ROOT, ".tmp")        # 运行期临时目录
 # ── 推理引擎：audio.cpp（audiocpp_cli，ggml 框架）──────────
 # 引擎源仓库固定（自动 clone 时使用；已有源码目录可用 AUDIOCPP_SRC 指向）
 AUDIOCPP_REPO = "https://github.com/0xShug0/audio.cpp.git"
-# clone/构建所用的引擎分支或提交（AUDIOCPP_REF）。注意：cosyvoice3 族目前
-# 只在 dev 分支实现（main 尚未合并），故默认 dev；等 main 合并后可改回 main。
-AUDIOCPP_REF = _env("AUDIOCPP_REF", "dev")
+# clone/构建所用的引擎分支或提交（AUDIOCPP_REF）。默认 main：本项目所需各族
+# （omnivoice / index_tts2 / sense_asr / fireredtts3 / cosyvoice3 / moss /
+# qwen3_tts / fish_audio / qwen3_asr / qwen3_forced_aligner）都已在 main，且
+# AuK 只在 main 实现（community_models/auk）；dev 是 main 的历史提交。
+AUDIOCPP_REF = _env("AUDIOCPP_REF", "main")
 AUDIOCPP_BIN = _env("AUDIOCPP_BIN", "")     # 已编译二进制绝对路径（留空自动定位/构建）
 AUDIOCPP_SRC = _env("AUDIOCPP_SRC", "")     # 已有源码目录（默认 vendor/audiocpp）
 # 追加 cmake 参数（如 "-DGGML_CUDA=ON"）；构建默认参数见 src/audiocpp.py
@@ -110,10 +112,11 @@ AUDIOCPP_DEBUG = _env_bool("AUDIOCPP_DEBUG", False)
 
 # ── TTS 模型（audiocpp 族）────────────────────────────────
 # TTS_MODEL 切换模型（弱化单一模型绑定）：omnivoice / indextts2 / fireredtts3 /
-# cosyvoice3 / moss_tts_local / qwen3_tts / fish_audio（简写亦可，如 fish）。
+# cosyvoice3 / moss_tts_local / qwen3_tts / fish_audio / auk / auk_flash
+# （简写亦可，如 fish；auk_flash = AuK 的蒸馏快档）。
 # 各模型的 GGUF 文件与 HF 兜底仓库定义在对应模型核心
 # （src/omnivoice.py、src/indextts2.py、src/fireredtts3.py、src/cosyvoice3.py、
-# src/moss_tts_local.py、src/qwen3_tts.py、src/fish_audio.py），
+# src/moss_tts_local.py、src/qwen3_tts.py、src/fish_audio.py、src/auk.py），
 # 本文件只放默认选择与本地目录。
 TTS_MODEL = _env("TTS_MODEL", "omnivoice")
 
@@ -161,6 +164,51 @@ FISH_AUDIO_TOP_P = _env("FISH_AUDIO_TOP_P", "0.8")               # 空 = 引擎�
 FISH_AUDIO_TOP_K = _env_int("FISH_AUDIO_TOP_K", 30)              # 0 = 引擎默认
 FISH_AUDIO_MAX_NEW_TOKENS = _env_int("FISH_AUDIO_MAX_NEW_TOKENS", 1024)  # 0 = 引擎默认
 GEN_SEED = _env_int("GEN_SEED", -1)                          # -1 = 随机（不传 seed）
+
+
+# ── AuK（腾讯混元 AuK / AuK-Flash，audiocpp 实验性 `--family auk`）──
+# 零样本语音克隆：参考音频（--voice-ref）+ 上游 zero-shot 指令模板 → 24 kHz 音频。
+# 模型包与其它族不同，是多文件目录（config/auk-base.yaml 与 config/auk-flash.yaml
+# 两个变体配置 + tokenizer/ + 生成器 / Qwen 条件编码器 / VAE 三组 GGUF），
+# --model 传目录本身，组件由 --session-option auk.* 指定；下载后在 HF 默认缓存内
+# 按真实文件名生成整棵别名目录（hf._ensure_gguf_tree），工程
+# models/AuK-Base-and-Flash-GGUF/ 可手工放置整个目录（优先）。
+AUK_REPO = _env("AUK_REPO", "audio-cpp/AuK-Base-and-Flash-GGUF")
+AUK_LOCAL_DIR = _env("AUK_LOCAL_DIR",
+                     os.path.join(MODELS_DIR, "AuK-Base-and-Flash-GGUF"))
+# 生成器精度档：f32（6.1 GB，质量最高）/ f16（3.1 GB）/ q8_0（1.6 GB，默认）。
+# 变体由 TTS_MODEL 决定：auk = Base（32 步）、auk_flash = Flash（固定 4 步）。
+AUK_GGUF_DTYPE = _env("AUK_GGUF_DTYPE", "q8_0")
+# 条件编码器（Qwen2.5-Omni-3B）：bf16（7.4 GB，与上游默认一致）/ q8_0（4.3 GB）
+AUK_QWEN_GGUF = _env("AUK_QWEN_GGUF", "qwen2.5-omni-3b-q8_0.gguf")
+# VAE 固定 F32（0.64 GB）：量化组合未经上游校验
+AUK_VAE_GGUF = _env("AUK_VAE_GGUF", "auk-vae-f32.gguf")
+# 零样本克隆指令模板（含 {text} 占位，缺占位时文本拼在末尾）：AuK 需要自然
+# 语言指令，默认取上游 COOKBOOK 的 zero-shot 模板；改这里即改克隆指令措辞。
+AUK_ZERO_SHOT_TEMPLATE = _env("AUK_ZERO_SHOT_TEMPLATE",
+                              'Say the following with the same voice: "{text}"')
+# 声音描述（引擎 --request-option instruct）：非空时 text 按普通待朗读文本传入，
+# 由引擎包成上游 instruct TTS 指令；留空（默认）= 纯零样本克隆（只听参考音色）。
+AUK_INSTRUCT = _env("AUK_INSTRUCT", "")
+# 输出时长（秒）：留空 = 自动估算——参考音频时长 × 目标文本/参考文本的 UTF-8
+# 字节比（与上游 get_gen_duration 同款），缺少参考文本时按 AUK_CHARS_PER_SECOND
+# 估算；结果再乘 AUK_DURATION_SCALE，并夹在 MIN..MAX 之间（估得超出上限时
+# 截到上限并在日志提示）。AuK 单次生成不给时长就按参考音频长度输出，故必须显式给。
+AUK_DURATION_SEC = _env("AUK_DURATION_SEC", "")
+AUK_DURATION_SCALE = _env("AUK_DURATION_SCALE", "1.0")
+AUK_CHARS_PER_SECOND = _env("AUK_CHARS_PER_SECOND", "4.5")   # 无参考文本时的语速（字/秒）
+AUK_MIN_DURATION = _env("AUK_MIN_DURATION", "1.0")           # 输出时长下限（秒）
+AUK_MAX_DURATION = _env("AUK_MAX_DURATION", "60.0")          # 输出时长上限（秒）
+# 生成参数：默认 = 官方基准（Base 32 步 / guidance 2.0；Flash 引擎固定 4 步并
+# 关闭 guidance，这两项对 Flash 无效）。设 0 / 空 / -1 = 不传 flag（引擎默认）。
+AUK_INFERENCE_STEPS = _env_int("AUK_INFERENCE_STEPS", 32)    # 0 = 引擎默认
+AUK_GUIDANCE_SCALE = _env("AUK_GUIDANCE_SCALE", "2.0")       # 空 = 引擎默认
+AUK_SWAY_SAMPLING_COEF = _env("AUK_SWAY_SAMPLING_COEF", "")  # 空 = 引擎默认（-1）
+# True = 分阶段释放条件编码器/生成器权重（显存或内存紧张时开启；后续请求要
+# 重新加载权重，明显更慢）
+AUK_MEM_SAVER = _env_bool("AUK_MEM_SAVER", False)
+# Flow 模型注意力：留空 = 引擎 auto；可显式 flash / eager
+AUK_ATTENTION = _env("AUK_ATTENTION", "")
 
 # ── 长文本分块（引擎 --text-chunk-size / --text-chunk-mode）─────────
 # 超长文本一次性合成会产生吞字/x/啊等乱码：实测 OmniVoice 1027 字整段合成

@@ -139,6 +139,41 @@ def _ensure_gguf_file(repo_id: str, filename: str,
     return alias
 
 
+def _ensure_gguf_tree(repo_id: str, files: list[str], dirname: str,
+                      logger: logging.Logger | None = None) -> str:
+    """下载/定位多文件模型包，返回可直接作为 --model 的目录（在 HF 默认缓存内）。
+
+    少数模型族（如 AuK）的权重不是一个文件，而是"组件目录"：config/*.yaml +
+    tokenizer/*.json + 多个 .gguf，引擎按目录内的真实文件名读取组件。HF 缓存
+    snapshots/ 是软链到 blobs/（哈希名、无扩展名），与 _ensure_gguf_file 的理由
+    相同不能直接喂给引擎。本函数在 HF 缓存仓库目录内按原有相对路径生成同名
+    硬链接（与 blob 同 inode、不占额外空间；跨文件系统退化为复制），返回该
+    别名目录；已存在的别名文件直接复用，不重复下载。
+    """
+    root = os.path.join(_cache_repo_dir(repo_id), dirname)
+    missing = [rel for rel in files
+               if not os.path.isfile(os.path.join(root, rel))]
+    if not missing:
+        return root
+    if logger is not None:
+        logger.info("本地未找到完整模型目录，从 HuggingFace 下载 %s（%d 个文件）…",
+                    repo_id, len(missing))
+    import shutil
+
+    for rel in missing:
+        dst = os.path.join(root, rel)
+        if os.path.isfile(dst):
+            continue
+        src = _hf_download(repo_id, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        real = os.path.realpath(src)
+        try:
+            os.link(real, dst)
+        except OSError:
+            shutil.copy2(real, dst)
+    return root
+
+
 def resolve_path(model_id: str = "", local_path: str = "") -> str:
     """解析主模型路径：优先 local_path，否则从 HuggingFace 自动下载。
 

@@ -140,7 +140,8 @@ atexit.register(shutil.rmtree, _TMP_DIR, ignore_errors=True)
 
 # 可选项（与 src/config.py 顶部 TTS_MODEL / 设备检测保持一致）
 _MODEL_CHOICES = ["omnivoice", "indextts2", "fireredtts3", "cosyvoice3",
-                  "moss_tts_local", "qwen3_tts", "fish_audio"]
+                  "moss_tts_local", "qwen3_tts", "fish_audio",
+                  "auk", "auk_flash"]
 _DEVICE_CHOICES = ["auto", "cuda", "mps", "cpu", "xpu"]   # auto = 引擎自动（cuda>mps>cpu）
 _LANG_CHOICES = ["Auto", "zh", "en", "yue", "ja", "ko"]
 
@@ -261,7 +262,8 @@ def build_demo() -> gr.Blocks:
                         choices=_MODEL_CHOICES,
                         value=(TTS_MODEL or "omnivoice"),
                         info="omnivoice / indextts2 / fireredtts3 / cosyvoice3 / "
-                             "moss_tts_local / qwen3_tts / fish_audio；首次使用自动下载权重",
+                             "moss_tts_local / qwen3_tts / fish_audio / auk（AuK "
+                             "Base）/ auk_flash（AuK-Flash 四步档）；首次使用自动下载权重",
                     )
                     with gr.Row():
                         device = gr.Dropdown(
