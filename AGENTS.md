@@ -22,6 +22,7 @@ uv sync                              # 装依赖（首次运行自动 clone+构�
 uv run python vc.py <ref.wav> <text.txt>          # 语音克隆（自动 ASR）
 uv run python vc.py --transcribe <ref.wav>        # 只转写参考音频（校对用）
 uv run python web.py                              # Web：http://localhost:38001
+uv run python web.py service install|uninstall|start|stop|restart|status|logs
 uv run python -m compileall -q src vc.py web.py   # 语法检查
 uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/行宽/语速/断点 F1）
 ```
@@ -116,12 +117,24 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   omnivoice/indextts2/fireredtts3/cosyvoice3/moss_tts_local/qwen3_tts/fish_audio/auk
   →写盘）、`draw()`（抽卡 N 次）。
   vc/web 不直接调模型/ASR。
+- `service.py` — Web 守护（**仅 macOS**，launchd 用户级单元）：`run_service(action, logger)`
+  实现 web.py 的 `service` 子命令七动作（install/uninstall/start/stop/restart/status/logs）。
+  单元内容按 config 顶部 `SERVICE_*` 常量用 plistlib 生成（`ProgramArguments` =
+  `SERVICE_PYTHON`（留空 → `.venv/bin/python`）+ `<root>/web.py`，`WorkingDirectory` =
+  工程根，`RunAtLoad`/`KeepAlive`，标准输出/错误 → `SERVICE_LOG_DIR`（工程内 `logs/`，
+  gitignore），`EnvironmentVariables.PATH` 含 homebrew —— launchd 默认 PATH 极简，首次
+  运行要 git clone + cmake 编译引擎），写到 `SERVICE_PLIST_DIR`（~/Library/LaunchAgents）
+  后用 `launchctl bootstrap/bootout/kickstart gui/$UID` 加载/卸载/重启，`launchctl print`
+  取状态。KeepAlive 常开时 `stop` 只能靠 bootout（卸载单元，plist 与日志保留），
+  `status` 未运行返回 1。
 
 ## Conventions
 
 - **设置规范**：一切可调参数放 `src/config.py` 顶部变量（或 Config 字段），同名 env 覆盖；
   CLI/web 不加 `--language` 之类参数，只收"引用哪个文件"类数据参数（vc.py 仅 ref_audio/
-  text_file/`--transcribe`）。
+  text_file/`--transcribe`）。唯一例外是 web.py 的 `service <动作>` 子命令（管理 launchd
+  守护，不动界面），其参数（label/日志目录/解释器/KeepAlive 等）同样在 config 顶部
+  `SERVICE_*` 常量，命令行只给动作名（`logs` 另有 `-n/-f`）。
 - **模型核心接口**：每个 TTS/ASR 核心实现 `_ensure_model(logger) -> str` 与
   `generate(cfg, logger, **kwargs)`；pipeline 按模型名分发，不要旁路。
   生成参数（steps/guidance/top-k/seed 等）在 config.py 顶部常量维护（env 覆盖），
@@ -179,6 +192,11 @@ uv run python tools/srt_eval.py a.srt [b.srt]     # SRT 断句评测（孤行/�
   synthesize 内部定位/自动构建/下载，点击结束（finally）调 `pipeline.release()`（清
   audiocpp `_BINARY_CACHE`）——模型本就在 audiocpp_cli 子进程内按次加载、退出即卸载，
   Python 侧不留常驻资源，长时间运行无需重启。
+- **web 守护（macOS）**：`uv run python web.py service install` 生成 launchd 单元
+  （`~/Library/LaunchAgents/com.audiotools.web.plist`）并加载，之后随登录自启、进程
+  退出自动拉起；`service status/logs -f/restart/stop/uninstall` 管理。日志在工程内
+  `logs/`（gitignore）。改 config.py 的 Web 设置后 `service restart` 生效。仅 macOS，
+  其他平台直接报错；Python 不常驻，单元里跑的就是 `.venv/bin/python <root>/web.py`。
 - **模型只在 HF 默认缓存，不落工程目录**：模型经 HF 下载后一律留在默认缓存
   （~/.cache/huggingface/hub，遵循 HF_HOME/HF_HUB_CACHE）；工程 models/（GGUF_LOCAL）
   仅支持用户手工放置，自动下载绝不写入。audio.cpp 按真实文件扩展名识别权重（内部

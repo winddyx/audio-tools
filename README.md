@@ -60,6 +60,7 @@ web.py (Web) ┘          │                     → 按 TTS_MODEL 分发模型
     ├── hf.py              # HuggingFace 下载（本地优先 + hf-mirror 兜底 + .gguf 别名）
     ├── llamarun.py        # llama.cpp 单次补全运行器（hymt2 / segment_llm 共用）
     ├── segment_llm.py     # 小 LLM 辅助断句（补停顿分隔 / 断条分组，默认关闭）
+    ├── service.py         # Web 守护（macOS launchd 单元：web.py service ... 用）
     └── pipeline.py        # 统一编排 synthesize()/draw()/release()
 ```
 
@@ -76,6 +77,12 @@ uv run python vc.py --transcribe <ref_audio.wav>
 
 # Web：http://localhost:38001（页面底部「模型与运行设置」选模型/设备/语言）
 uv run python web.py
+
+# Web 守护（macOS launchd 用户级单元）：装好随登录自启、进程退出自动拉起
+uv run python web.py service install       # 写单元 + 加载并启动（uninstall 卸载并删单元）
+uv run python web.py service status        # 状态/pid/上次退出码（未运行返回 1）
+uv run python web.py service restart       # 改完 src/config.py 后让设置在守护里生效
+uv run python web.py service logs -f       # 守护日志（工程内 logs/，tail 跟随）
 ```
 
 ## 字幕断条（SRT）
@@ -108,6 +115,12 @@ uv run python web.py
   每屏行数、单条最长秒数）。
 - 引擎/模型按需加载：启动即用；首次 ASR 或生成自动构建/下载，任务结束立即
   释放，长时间运行无需重启。
+- **Web 守护（macOS）**：`service install` 生成 launchd 用户级单元并加载，之后
+  随登录自启、进程退出自动拉起；`service status / logs -f / restart / stop /
+  uninstall` 管理。单元里跑的就是 `.venv/bin/python <工程根>/web.py`，工作目录
+  为工程根，标准输出/错误落在工程内 `logs/`（gitignore，`service logs` 即 tail
+  这两个文件）；解释器/日志目录/KeepAlive 等参数见下节 `SERVICE_*`。仅 macOS
+  （其他平台报错退出），Python 侧不常驻任何东西。
 - 终端日志在标题下方、Tab 栏上方（页面级共享终端）：三个 Tab 的事件处理器
   都把日志写进同一个会话缓冲（gradio 会话隔离，刷新即清空）。
 
@@ -163,6 +176,9 @@ uv run python web.py
 | `SRT_QWEN3_ASR_FILE` | `Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf` | Qwen3-ASR 权重（HF 仓库 `audio-cpp/audio.cpp-gguf`；`SRT_QWEN3_ASR_LOCAL` 可指本地文件） |
 | `SRT_QWEN3_ALIGNER_FILE` | `Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf` | Qwen3-ForcedAligner 权重（词级时间戳；`SRT_QWEN3_ALIGNER_LOCAL` 可指本地文件） |
 | `WEB_IP` / `WEB_PORT` | `0.0.0.0` / `38001` | Web 监听 |
+| `SERVICE_LABEL` / `SERVICE_PLIST_DIR` / `SERVICE_LOG_DIR` | `com.audiotools.web` / `~/Library/LaunchAgents` / `<工程>/logs` | Web 守护（macOS launchd）：单元名 / 单元文件目录 / 日志目录（`web.stdout.log`、`web.stderr.log`） |
+| `SERVICE_KEEPALIVE` / `SERVICE_RUN_AT_LOAD` | `true` / `true` | 守护进程退出即自动拉起 / 单元加载（登录、install）时立即启动 |
+| `SERVICE_PYTHON` / `SERVICE_PATH` / `SERVICE_LOG_LINES` | 空 / `/opt/homebrew/bin:/usr/local/bin:…` / `50` | 守护解释器（留空 = `.venv/bin/python`，缺则用当前解释器）/ 守护进程 PATH（launchd 默认极简，首次运行要 git+cmake）/ `service logs` 默认行数 |
 | `HF_ENDPOINT` | 空 | 直连失败自动切 hf-mirror（`HF_NO_MIRROR_FALLBACK=1` 关闭） |
 
 ## 模型

@@ -26,6 +26,9 @@ vendor/
 # SRT 页 ASR 热词记录（web 每次提交字幕任务写入一次，属本地数据）
 hotword.txt
 
+# Web 守护（launchd）日志（web.py service logs 读它）
+logs/
+
 # Reasonix 工具目录
 .reasonix/
 

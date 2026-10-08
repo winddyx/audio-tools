@@ -22,21 +22,28 @@ synthesize 内部才定位/自动构建引擎、定位/下载模型 GGUF（日�
 默认值。
 
 用法:
-    uv run python web.py
+    uv run python web.py                              # 前台运行 Web 界面
+    uv run python web.py service install              # 装 launchd 守护（自启 + 崩溃拉起）
+    uv run python web.py service <动作>               # uninstall/start/stop/restart/status/logs
+    uv run python web.py service logs -f              # 跟随守护日志
 
-设置（监听地址/端口等）统一在 src/config.py 顶部变量，无命令行参数。
+设置（监听地址/端口、守护参数等）统一在 src/config.py 顶部变量，命令行只
+有 service 动作（管理守护用），没有 host/port 之类的启动参数。
 """
 
 from __future__ import annotations
 
+import argparse
 import atexit
 import contextvars
 import html as _html
 import logging
 import os
 import shutil
+import sys
 import time
 from datetime import datetime
+from typing import Optional
 
 import gradio as gr
 import gradio.processing_utils as _gradio_proc
@@ -47,6 +54,7 @@ from src import (
     _transcribe_ref,
 )
 from src.config import (
+    SERVICE_LOG_LINES,
     SRT_ASR,
     SRT_BREAK_ON_COMMA,
     SRT_LLM,
@@ -73,6 +81,7 @@ from src.config import (
 from src.hymt2 import default_prompt as hymt2_default_prompt
 from src.hymt2 import translate as hymt2_translate
 from src.pipeline import release, synthesize
+from src.service import SERVICE_ACTIONS, run_service
 from src.subtitle import subtitles
 
 # SRT 页 ASR 模型可选值（与 src/config.py 顶部 SRT_ASR 一致）
@@ -707,12 +716,65 @@ def build_demo() -> gr.Blocks:
     return demo
 
 
-def main() -> int:
+def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    """解析命令行（只有 service 子命令；其余设置全在 config.py 顶部变量）。"""
+    parser = argparse.ArgumentParser(
+        description="audio-tools Web 界面（Gradio 三 Tab：语音克隆 / 粤语翻译 / SRT 字幕）",
+    )
+    sub = parser.add_subparsers(dest="command")
+    svc = sub.add_parser(
+        "service", help="管理 macOS launchd 守护（自启 + 崩溃拉起，参数见 config.py）")
+    svc.add_argument(
+        "action", choices=list(SERVICE_ACTIONS),
+        help="install 装守护并加载 / uninstall 卸载并删单元 / start 启动 / "
+             "stop 停止（卸载单元）/ restart 重启（改完 config.py 用）/ "
+             "status 查状态 / logs 看日志")
+    svc.add_argument(
+        "-n", "--lines", type=int, default=SERVICE_LOG_LINES,
+        help=f"logs 显示的行数（默认 {SERVICE_LOG_LINES}）")
+    svc.add_argument(
+        "-f", "--follow", action="store_true",
+        help="logs 跟随输出（tail -f）")
+    return parser.parse_args(argv)
+
+
+def _ensure_terminal_logging() -> None:
+    """service 子命令要终端可见：保证 INFO 日志能上屏。
+
+    web.py 在导入时已给 root 加过 handler（页面终端用），main() 里的
+    basicConfig 于是成为空操作（root level 停在默认 WARNING），INFO 记录会
+    整条被丢弃——service 是终端命令，这里补一个 stderr handler。
+    """
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if any(isinstance(h, logging.StreamHandler) and h.stream is sys.stderr
+           for h in root.handlers):
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
+    root.addHandler(handler)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
     )
     _quiet_hf_logs()
+
+    args = _parse_args(argv)
+    if args.command == "service":
+        # 守护管理：不动 Web 界面，只碰 launchd 单元（见 src/service.py）
+        _ensure_terminal_logging()
+        try:
+            return run_service(args.action, logger,
+                               lines=args.lines, follow=args.follow)
+        except (RuntimeError, OSError) as e:
+            # OSError：单元文件目录不可写（沙箱/权限）等系统级失败
+            logger.error("service %s: %s", args.action, e)
+            return 1
+
     _cleanup_leftover_tmp()
 
     # 启动只启动 Web，引擎/模型不做预热：首次点击"生成"或上传参考音频

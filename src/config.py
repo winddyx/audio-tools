@@ -338,6 +338,35 @@ WEB_PORT = _env_int("AUDIOTOOLS_WEB_PORT", 38001)
 WEB_AUTO_OPEN_BROWSER = _env_bool("AUDIOTOOLS_WEB_OPEN_BROWSER", False)
 
 
+# ── Web 守护（macOS launchd 用户级单元）────────────────────
+# web.py 的 service 子命令（install / uninstall / start / stop / restart /
+# status / logs）按这里的参数生成并管理 launchd 单元，使 Web 界面随登录
+# 自启、异常退出自动拉起。实现见 src/service.py；仅 macOS 支持，其他平台
+# 直接报错退出（本机 darwin arm64）。
+SERVICE_LABEL = _env("AUDIOTOOLS_SERVICE_LABEL", "com.audiotools.web")
+# 单元文件目录（launchd 用户级 agent 的标准位置；可改，便于测试）
+SERVICE_PLIST_DIR = _env(
+    "AUDIOTOOLS_SERVICE_PLIST_DIR", os.path.expanduser("~/Library/LaunchAgents"))
+# 单元标准输出/错误目录（工程内 logs/，gitignore；文件名 web.stdout.log /
+# web.stderr.log，service logs 即 tail 这两个文件）
+SERVICE_LOG_DIR = _env(
+    "AUDIOTOOLS_SERVICE_LOG_DIR", os.path.join(_PROJECT_ROOT, "logs"))
+# True = 进程退出即自动重启（网页服务常驻）；False = 只在加载/登录时启动一次
+SERVICE_KEEPALIVE = _env_bool("AUDIOTOOLS_SERVICE_KEEPALIVE", True)
+# True = 单元加载（登录或 install）时立即启动
+SERVICE_RUN_AT_LOAD = _env_bool("AUDIOTOOLS_SERVICE_RUN_AT_LOAD", True)
+# 守护进程所用解释器（绝对路径）：留空 = 自动（工程 .venv/bin/python 优先，
+# 其次启动 service 命令的那个解释器）
+SERVICE_PYTHON = _env("AUDIOTOOLS_SERVICE_PYTHON", "")
+# 守护进程 PATH：launchd 默认 PATH 极简（不含 homebrew），而首次运行要
+# git clone + cmake 编译引擎，故显式给出常用路径
+SERVICE_PATH = _env(
+    "AUDIOTOOLS_SERVICE_PATH",
+    "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+# service logs 默认显示的行数（命令行 -n 覆盖）
+SERVICE_LOG_LINES = _env_int("AUDIOTOOLS_SERVICE_LOG_LINES", 50)
+
+
 # ── LLM 文案翻译：Hy-MT2-1.8B（腾讯开源翻译模型，llama.cpp 子进程）──
 # 用途：普通话/中文文案 → 粤语口播文案（作为 TTS 输入前的文案处理）。
 # Hy-MT2 官方支持粤语（yue）互译；本模块用 llama-completion 子进程推理，

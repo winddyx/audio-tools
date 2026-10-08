@@ -8,6 +8,7 @@ audio-tools — 核心包（src/）
 - sensevoice：ASR 核心（SenseVoice-Small，audiocpp sense_asr 族）
 - subtitle：SRT 字幕核心（VAD 分段 + SenseVoice，或 Qwen3-ASR + ForcedAligner）
 - hf：HuggingFace 下载与缓存管理（本地优先 + hf-mirror 兜底）
+- service：Web 守护（macOS launchd 用户级单元；web.py 的 service 子命令）
 - pipeline：统一编排 synthesize()/draw()（ASR → TTS → 命名 → 写盘）
 
 入口：vc.py（CLI）、web.py（Gradio Web），共用 src/。
@@ -20,6 +21,7 @@ from .config import (
     get_best_device,
 )
 from .sensevoice import _transcribe_ref
+from .service import SERVICE_ACTIONS, run_service
 from .audiocpp import AudioResult, ChunkInfo
 from .hf import _HF_MIRROR, _hf_download, _switch_hf_endpoint, resolve_path
 from .pipeline import SynthesisResult, draw, synthesize
@@ -28,6 +30,7 @@ from .subtitle import SrtResult, subtitles
 __all__ = [
     "Config", "_to_bool", "_quiet_hf_logs", "get_best_device",
     "_transcribe_ref",
+    "SERVICE_ACTIONS", "run_service",
     "AudioResult", "ChunkInfo",
     "_HF_MIRROR", "_hf_download", "_switch_hf_endpoint", "resolve_path",
     "SynthesisResult", "synthesize", "draw",
